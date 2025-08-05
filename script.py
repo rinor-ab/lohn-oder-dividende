@@ -3,20 +3,19 @@ import pandas as pd
 FILE = "https://github.com/rinor-ab/lohn-oder-dividende/blob/6be7db40684fa9feab84356a0ffe9bc80c4c28ce/MASTER.xlsx"
 
 # --- 2.1 Steuerfüsse -------------------------------------------------
-mult = (
-    pd.read_excel(FILE, "Steuerfüsse", header=2)          # skip two header rows
-      .rename(columns={
-          mult.columns[0]: "CantonNumber",
-          mult.columns[1]: "CantonCode",
-          mult.columns[2]: "CommuneID",
-          mult.columns[3]: "CommuneName",
-          mult.columns[4]: "IncomeKantonMult",
-          mult.columns[5]: "IncomeCommuneMult",
-          mult.columns[8]: "CorpProfitKantonMult",
-          mult.columns[9]: "CorpProfitCommuneMult",
-      })
-      .loc[lambda d: d["CommuneID"].notna()]
-)
+# read the table first so we can reference its original column names
+mult = pd.read_excel(FILE, "Steuerfüsse", header=2)  # skip two header rows
+mult = mult.rename(columns={
+    mult.columns[0]: "CantonNumber",
+    mult.columns[1]: "CantonCode",
+    mult.columns[2]: "CommuneID",
+    mult.columns[3]: "CommuneName",
+    mult.columns[4]: "IncomeKantonMult",
+    mult.columns[5]: "IncomeCommuneMult",
+    mult.columns[8]: "CorpProfitKantonMult",
+    mult.columns[9]: "CorpProfitCommuneMult",
+})
+mult = mult.loc[mult["CommuneID"].notna()]
 
 # convert 98 → 0.98
 pct_cols = ["IncomeKantonMult","IncomeCommuneMult",
