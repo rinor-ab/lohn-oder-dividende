@@ -5,7 +5,7 @@ FILE = "https://github.com/rinor-ab/lohn-oder-dividende/blob/6be7db40684fa9feab8
 
 # --- 2.1 Steuerfüsse -------------------------------------------------
 # read the table first so we can reference its original column names
-mult = pd.read_excel(FILE, "Steuerfüsse", header=2)  # skip two header rows
+mult = pd.read_excel(FILE, "Steuerfüsse", header=2, engine="openpyxl")  # skip two header rows
 mult = mult.rename(columns={
     mult.columns[0]: "CantonNumber",
     mult.columns[1]: "CantonCode",
