@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-FILE = "https://github.com/rinor-ab/lohn-oder-dividende/blob/6be7db40684fa9feab84356a0ffe9bc80c4c28ce/MASTER.xlsx"
+FILE = "MASTER.xlsx"
 
 # --- 2.1 Steuerfüsse -------------------------------------------------
 # read the table first so we can reference its original column names
