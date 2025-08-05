@@ -65,3 +65,55 @@ soc = (
     pd.read_excel(FILE,"Social Security Contributions")
       .set_index("ParameterKey")["Value"].to_dict()
 )
+
+
+# 3.1  federal + cantonal progressive tax
+def progressive_tax(income, table):
+    row = table.loc[table["Upper"].ge(income)].iloc[0]
+    base  = row["BaseCHF"]
+    lower = row["Lower"]
+    rate  = row["MargRate"] / 100      # convert %
+    return base + (income - lower) * rate
+
+def personal_income_tax(income, canton, commune_id):
+    # cantonal part
+    cant_tax = progressive_tax(income, cant_tables[canton])
+    # communal multipliers
+    row = mult.loc[mult["CommuneID"]==commune_id].iloc[0]
+    cant_mult = row["IncomeKantonMult"]
+    comm_mult = row["IncomeCommuneMult"]
+    # federal part
+    fed_tax = progressive_tax(income, fed_table)
+    return fed_tax + cant_tax * cant_mult * comm_mult
+
+# 3.2  corporate tax
+def corporate_tax(profit, canton, commune_id):
+    kant_rate = corp_rate[canton]
+    row = mult.loc[mult["CommuneID"]==commune_id].iloc[0]
+    # effective rate proportional: canton part already combined with commune ―
+    # if your table holds *only canton part*, multiply by row["CorpProfitCommuneMult"]
+    return profit * kant_rate
+
+# 3.3  social security (simplified, employee half / employer half)
+AHV = soc["AHV_IV_EO_EmployerShare"]
+ALV = soc["ALV_EmployerShare"]
+ALV_CEIL = soc["ALV_Ceiling"]
+
+def social(gross, age):
+    ee_rate = AHV + ALV
+    er_rate = AHV + ALV
+    if gross > ALV_CEIL:   # solidarity piece left out for legibility
+        ee_rate -= ALV     # /!\ if you model solidarity, add 0.005 instead
+        er_rate -= ALV
+    # BVG
+    for (lo,hi), r in {(25,34):0.07,(35,44):0.10,(45,54):0.15,(55,65):0.18}.items():
+        if lo<=age<=hi:
+            bvg_rate = r ; break
+    insured = max(0, min(gross, 90720) - 26460)
+    ee_bvg = er_bvg = insured * bvg_rate / 2
+    ee = gross*ee_rate + ee_bvg
+    er = gross*er_rate + er_bvg
+    return ee, er
+
+
+
