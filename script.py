@@ -1,6 +1,6 @@
 import pandas as pd
 
-FILE = "MASTER.xlsx"
+FILE = "https://github.com/rinor-ab/lohn-oder-dividende/blob/6be7db40684fa9feab84356a0ffe9bc80c4c28ce/MASTER.xlsx"
 
 # --- 2.1 Steuerfüsse -------------------------------------------------
 mult = (
