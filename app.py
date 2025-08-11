@@ -1,4 +1,4 @@
-# app.py – Schweizer Lohn vs. Dividende Rechner (Patched + Realitätschecks)
+# app.py – Schweizer Lohn vs. Dividende Rechner (Maximally Patched & Meticulous)
 import json, math, pathlib
 import streamlit as st
 
@@ -30,6 +30,9 @@ def is_nan(x):
 
 def nan_to_zero(x):
     return 0.0 if (x is None or is_nan(x)) else x
+
+def clamp_nonneg(x):
+    return max(0.0, float(x or 0.0))
 
 # ------------------------- Daten laden ------------------------------------------
 steuerfuesse          = load_json("steuer", [])
@@ -89,6 +92,9 @@ BVG_entry_threshold = social_sec.get("BVG_EntryThreshold", 22680.0)
 BVG_coord_deduction = social_sec.get("BVG_CoordDeduction", 26460.0)
 BVG_max_insured     = social_sec.get("BVG_MaxInsuredSalary", 90720.0)
 
+def bvg_insured_part(salary):
+    return max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
+
 # ------------------------- Kantons-/Gemeindemapping -----------------------------
 canton_to_communes = {}
 for row in steuerfuesse:
@@ -106,13 +112,13 @@ if not canton_to_communes:
 
 # ------------------------- UI ---------------------------------------------------
 st.title("🇨🇭 Vergleich: Lohn vs. Dividende")
-st.caption("Berechnet Nettobezüge für Schweizer Unternehmer – inkl. AHV/ALV/BVG und direkter Steuern.")
+st.caption("Berechnet Nettobezüge für Schweizer Unternehmer – inkl. AHV/ALV/BVG, direkter Steuern, Teilbesteuerung & Realitätschecks.")
 
 col1, col2 = st.columns(2)
 with col1:
     profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
     desired_income = st.number_input("Gewünschte Auszahlung an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
-    ahv_subject    = st.radio("AHV/ALV-Beiträge?", ["Ja", "Nein"])
+    ahv_subject    = st.radio("AHV/ALV/BVG auf Lohn?", ["Ja", "Nein"])
     age_band = st.selectbox("Altersband (BVG)",
                             ["25-34 (7%)", "35-44 (10%)", "45-54 (15%)", "55-65 (18%)"],
                             index=1)
@@ -120,21 +126,22 @@ with col2:
     canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()))
     commune  = st.selectbox("Gemeinde", canton_to_communes.get(canton, ["Default"]))
     other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
+    private_deductions = st.number_input("Private Abzüge (z. B. Säule 3a, Berufsauslagen) [CHF]", 0.0, step=5_000.0)
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
     st.session_state.debug_mode = debug_mode
 
-st.markdown("### Realitätschecks")
+st.markdown("### Realitätschecks & Annahmen")
 col3, col4 = st.columns(2)
 with col3:
-    # AHV-Umqualifizierung / Mindestlohn
     min_salary = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
     ahv_risk   = st.checkbox("AHV-Umqualifizierung auf Dividenden anwenden (falls Lohn < Mindestlohn)", value=True)
-    # Beteiligungsquote
-    share_pct = st.number_input("Beteiligungsquote [%]", min_value=0.0, max_value=100.0, value=100.0, step=5.0)
+    share_pct  = st.number_input("Beteiligungsquote [%]", min_value=0.0, max_value=100.0, value=100.0, step=5.0)
 with col4:
-    # AG-Overheads (vereinfachte Sätze)
-    fak_rate = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1) / 100.0
+    fak_rate     = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1) / 100.0
     uvg_ktg_rate = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1) / 100.0
+    church_rate  = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5) / 100.0
+
+optimizer_on = st.checkbox("🔎 Beste Mischung (Lohn + Dividende) automatisch optimieren", value=False)
 
 # gewünschte Auszahlung validieren
 if desired_income == 0:
@@ -142,33 +149,27 @@ if desired_income == 0:
 elif desired_income > profit:
     desired_income = profit
 
-# ------------------------- Bundessteuer -----------------------------------------
+# ------------------------- Steuern (Funktionen) ---------------------------------
 def federal_income_tax(taxable):
-    """
-    Stückweise-linear:
-    Steuer = base_i + (taxable - thr_{i-1}) * rate_i, sofern taxable <= thr_i.
-    Über oberster Stufe: base_top + (taxable - thr_top) * rate_top.
-    """
-    if taxable <= 0:
-        return 0.0
+    """Stückweise-linear; taxable >= 0."""
+    t = clamp_nonneg(taxable)
     prev_thr = 0.0
     for b in income_tax_conf:
         thr, base, rate = b["thr"], b["base"], b["rate"]
-        if taxable <= thr:
-            return base + (taxable - prev_thr) * rate
+        if t <= thr:
+            return base + (t - prev_thr) * rate
         prev_thr = thr
     top = income_tax_conf[-1]
-    return top["base"] + (taxable - top["thr"]) * top["rate"]
+    return top["base"] + (t - top["thr"]) * top["rate"]
 
-# ------------------------- Kantonssteuer ----------------------------------------
 def cantonal_income_tax(taxable, kanton, gemeinde):
-    if taxable <= 0:
-        return 0.0
+    """Kantonale Basistarife + Multiplikatoren (Kanton+Gemeinde)."""
+    t = clamp_nonneg(taxable)
     brackets = income_tax_cantons.get(kanton, [])
     cantonal_base_tax = 0.0
-    remaining = taxable
+    remaining = t
     for bracket in brackets:
-        chunk_size = bracket.get("For the next CHF", 0) or 0
+        chunk_size = (bracket.get("For the next CHF", 0) or 0)
         rate = (bracket.get("Additional %", 0) or 0) / 100.0
         if chunk_size == 0:
             cantonal_base_tax += remaining * rate
@@ -182,7 +183,6 @@ def cantonal_income_tax(taxable, kanton, gemeinde):
     if remaining > 0 and brackets:
         cantonal_base_tax += remaining * (brackets[-1].get("Additional %", 0) / 100.0)
 
-    # Multiplikatoren (Kanton + Gemeinde)
     kant_mult, comm_mult = 1.0, 0.0
     for row in steuerfuesse:
         if row.get("Kanton") == kanton and row.get("Gemeinde") == gemeinde:
@@ -191,31 +191,25 @@ def cantonal_income_tax(taxable, kanton, gemeinde):
             break
     return cantonal_base_tax * (kant_mult + comm_mult)
 
-# ------------------------- Teilbesteuerung / Beteiligung ------------------------
-def qualifies_partial_taxation(share_pct):
-    # Vereinfachte Faustregel: >= 10 % Beteiligung → Teilbesteuerung
-    return (share_pct or 0.0) >= 10.0
+def qualifies_partial_taxation(share_pct_):
+    return (share_pct_ or 0.0) >= 10.0
 
-def get_dividend_inclusion_rate_canton(kanton, qualifies):
+def get_div_incl_canton(kanton, qualifies):
     base = dividend_inclusion.get(kanton, 0.70)
     return base if qualifies else 1.00
 
-def get_dividend_inclusion_rate_federal(qualifies):
+def get_div_incl_fed(qualifies):
     return 0.70 if qualifies else 1.00
 
-# ------------------------- Berechnung -------------------------------------------
-if profit > 0:
-    # Körperschaftssteuer (Bund fix 8.5% wenn nicht in JSON)
+# ------------------------- Körperschaftssteuer-Setup ----------------------------
+# Bund (8.5 %) + Kanton/Gemeinde (Basis aus JSON mit Multiplikatoren)
+def corporate_tax_components(canton, commune):
     fed_corp = corporate_tax.get("Confederation", 0.085)
-
-    # Kantonalbasisrate: erlaubt dict mit 'rate' oder direkter float
     cant_corp_data = corporate_tax.get(canton, 0.0)
     if isinstance(cant_corp_data, dict):
         cant_corp_base = nan_to_zero(cant_corp_data.get("rate", cant_corp_data.get("cantonal", 0.0)))
     else:
         cant_corp_base = nan_to_zero(cant_corp_data)
-
-    # Lokale Multiplikatoren für Gewinnsteuer (Kanton + Gemeinde)
     canton_mult, comm_mult = 1.0, 0.0
     for row in steuerfuesse:
         if row.get("Kanton") == canton and row.get("Gemeinde") == commune:
@@ -224,45 +218,44 @@ if profit > 0:
             break
     local_corp = cant_corp_base * (canton_mult + comm_mult)
     total_corp = fed_corp + local_corp
+    return fed_corp, local_corp, total_corp
 
-    # BVG Sätze (AG/AN je hälftig)
-    age_key = age_band.split()[0]
-    selected_bvg_rate = BVG_rates.get(age_key, BVG_rates["35-44"])
-    bvg_employee_rate = selected_bvg_rate / 2
-    bvg_employer_rate = selected_bvg_rate / 2
+fed_corp, local_corp, total_corp = corporate_tax_components(canton, commune)
 
-    # ----------------- Szenario A: Lohn -----------------
+# ------------------------- Lohn: Beiträge-Helper --------------------------------
+def employer_costs_on_salary(salary, ahv_on=True, fak=fak_rate, uvg=uvg_ktg_rate, include_bvg=True):
+    """AG-Kosten (AHV/ALV/BVG + FAK/UVG/KTG)."""
+    if not ahv_on or salary <= 0:
+        return 0.0, 0.0, 0.0, 0.0  # ahv_emp, alv_emp, bvg_emp, extra_costs
+    ahv_emp = AHV_employer * salary
+    alv_emp = ALV_employer * min(salary, ALV_ceiling)
+    bvg_emp = 0.0
+    if include_bvg and salary >= BVG_entry_threshold:
+        bvg_emp = (BVG_rates[age_band.split()[0]] / 2) * bvg_insured_part(salary)
+    extra = fak * salary + uvg * salary
+    return ahv_emp, alv_emp, bvg_emp, extra
+
+def employee_deductions_on_salary(salary, ahv_on=True, include_bvg=True):
+    """AN-Abzüge (AHV/ALV/BVG)."""
+    if not ahv_on or salary <= 0:
+        return 0.0, 0.0, 0.0, 0.0  # ahv_ee, alv_ee, bvg_ee, total
+    ahv_ee = AHV_employee * salary
+    alv_ee = ALV_employee * min(salary, ALV_ceiling)
+    bvg_ee = 0.0
+    if include_bvg and salary >= BVG_entry_threshold:
+        bvg_ee = (BVG_rates[age_band.split()[0]] / 2) * bvg_insured_part(salary)
+    total = ahv_ee + alv_ee + bvg_ee
+    return ahv_ee, alv_ee, bvg_ee, total
+
+# ------------------------- Szenario A: Reiner Lohn ------------------------------
+def scenario_salary_only():
     salary = min(desired_income if desired_income is not None else profit, profit)
+    # AG-Kosten
+    ahv_emp, alv_emp, bvg_emp, extra = employer_costs_on_salary(salary, ahv_on=(ahv_subject == "Ja"))
+    employer_cost = ahv_emp + alv_emp + bvg_emp + extra
 
-    # Sozialabgaben vorbereiten (AN/AG)
-    ahv_ee = alv_ee = bvg_ee = 0.0
-    ahv_emp = alv_emp = bvg_emp = 0.0
-    fak_cost = uvg_cost = 0.0
-
-    if ahv_subject == "Ja":
-        # Arbeitgeber
-        ahv_emp = AHV_employer * salary
-        alv_emp = ALV_employer * min(salary, ALV_ceiling)
-        insured_emp = 0.0
-        if salary >= BVG_entry_threshold:
-            insured_emp = max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
-            bvg_emp = bvg_employer_rate * insured_emp
-        # zusätzliche Overheads
-        fak_cost = fak_rate * salary
-        uvg_cost = uvg_ktg_rate * salary
-        employer_cost = ahv_emp + alv_emp + bvg_emp + fak_cost + uvg_cost
-
-        # Arbeitnehmer
-        ahv_ee = AHV_employee * salary
-        alv_ee = ALV_employee * min(salary, ALV_ceiling)
-        insured_ee = 0.0
-        if salary >= BVG_entry_threshold:
-            insured_ee = max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
-            bvg_ee = bvg_employee_rate * insured_ee
-        employee_deductions = ahv_ee + alv_ee + bvg_ee
-    else:
-        employer_cost = 0.0
-        employee_deductions = 0.0
+    # AN-Abzüge
+    ahv_ee, alv_ee, bvg_ee, ee_total = employee_deductions_on_salary(salary, ahv_on=(ahv_subject == "Ja"))
 
     profit_after_salary = profit - salary - employer_cost
     if profit_after_salary < 0:
@@ -272,112 +265,277 @@ if profit > 0:
         )
     profit_after_salary = max(0.0, profit_after_salary)
 
-    corp_tax_A   = profit_after_salary * total_corp
+    corp_tax = profit_after_salary * total_corp
 
-    # *** WICHTIGER FIX: Lohn steuerbar = Brutto - abzugsfähige AN-Beiträge + weitere Einkünfte ***
-    taxable_A    = max(0.0, salary - employee_deductions) + other_inc
-    income_tax_A = federal_income_tax(taxable_A) + cantonal_income_tax(taxable_A, canton, commune)
-    net_A        = salary - employee_deductions - income_tax_A
+    # Steuerbar (fix): Brutto − AN-Abzüge + weitere Einkünfte − private Abzüge
+    taxable_A = clamp_nonneg(salary - ee_total + other_inc - private_deductions)
 
-    # ----------------- Szenario B: Dividende -----------------
+    fed_tax   = federal_income_tax(taxable_A)
+    cant_tax  = cantonal_income_tax(taxable_A, canton, commune)
+    cant_tax *= (1.0 + church_rate)
+    income_tax = fed_tax + cant_tax
+
+    net = salary - ee_total - income_tax
+    return {
+        "salary": salary,
+        "employer_cost": employer_cost,
+        "ee_total": ee_total,
+        "corp_tax": corp_tax,
+        "income_tax": income_tax,
+        "net": net,
+        "components": dict(ahv_emp=ahv_emp, alv_emp=alv_emp, bvg_emp=bvg_emp, extra=extra,
+                           ahv_ee=ahv_ee, alv_ee=alv_ee, bvg_ee=bvg_ee,
+                           fed_tax=fed_tax, cant_tax=cant_tax)
+    }
+
+# ------------------------- Szenario B: Reine Dividende --------------------------
+def scenario_dividend_only():
+    # Erst ohne Umqualifizierung
     qualifies = qualifies_partial_taxation(share_pct)
+    incl_fed = get_div_incl_fed(qualifies)
+    incl_cat = get_div_incl_canton(canton, qualifies)
 
-    corp_tax_B  = profit * total_corp
-    after_corp  = max(0.0, profit - corp_tax_B)
-    dividend_base = min(after_corp, desired_income) if desired_income else after_corp
+    # Ausgangspunkt: ohne AG-Kosten
+    after_corp_base = profit * (1.0 - total_corp)
+    dividend_guess = min(after_corp_base, desired_income) if desired_income else after_corp_base
 
-    incl_fed = get_dividend_inclusion_rate_federal(qualifies)
-    incl_cat = get_dividend_inclusion_rate_canton(canton, qualifies)
+    # Iteration: AG-AHV auf umqualifizierten Div-Teil reduziert ausschüttbaren Betrag,
+    # aber mit Körperschaftsteuer-Schild: Nachsteuer-Abgang = C * (1 - total_corp)
+    reclass_base = 0.0
+    for _ in range(30):
+        want_reclass = ahv_risk and dividend_guess > 0 and min_salary > 0
+        shortfall = max(0.0, min_salary)  # Ziel-Lohn
+        # In reiner Div-Variante ist "Lohn" = 0
+        if want_reclass and 0.0 < min_salary:
+            reclass_base = min(min_salary - 0.0, dividend_guess)
+        else:
+            reclass_base = 0.0
 
-    income_tax_B = (
-        federal_income_tax(dividend_base * incl_fed + other_inc) +
-        cantonal_income_tax(dividend_base * incl_cat + other_inc, canton, commune)
-    )
+        ag_reclass_cost = AHV_employer * reclass_base  # nur AHV/IV/EO; FAK/UVG typischerweise nicht
+        after_corp_new = (profit - ag_reclass_cost) * (1.0 - total_corp)
+        dividend_new = min(after_corp_new, desired_income) if desired_income else after_corp_new
+        if abs(dividend_new - dividend_guess) < 0.5:
+            dividend_guess = dividend_new
+            break
+        dividend_guess = dividend_new
 
-    # AHV-Umqualifizierung, wenn Lohn < Mindestlohn
-    ahv_reclass_base = 0.0
-    ahv_emp_reclass = ahv_ee_reclass = 0.0
-    if ahv_risk and salary < min_salary and dividend_base > 0:
-        shortfall = min_salary - salary
-        # konservativ: Umqualifizierung max. bis zur Höhe der Dividende
-        ahv_reclass_base = min(shortfall, dividend_base)
-        # AHV auf reklassifizierten Anteil (ALV typischerweise nicht auf Dividende)
-        ahv_emp_reclass = AHV_employer * ahv_reclass_base
-        ahv_ee_reclass  = AHV_employee * ahv_reclass_base
-        # Vereinfachung: steuerliche Behandlung der reklassifizierten Portion bleibt wie oben
-        # (konservativ in Richtung Lohn könnte man diesen Teil als Lohn veranlagen – komplexer)
+    dividend = dividend_guess
+    ee_reclass = AHV_employee * reclass_base if reclass_base > 0 else 0.0
 
-    # Netto Dividende: Bruttodividende minus private Steuer minus AN-AHV der Umqualifizierung.
-    # AG-AHV der Umqualifizierung reduziert wirtschaftlich die Ausschüttung – wir ziehen sie ebenfalls ab.
-    net_B = dividend_base - income_tax_B - ahv_ee_reclass - ahv_emp_reclass
+    # Steuerbar (B): Dividende teilbesteuert + reklassifizierter Teil als Lohn (100%),
+    # wobei AN-AHV auf reklassifiziertem Teil abzugsfähig ist.
+    taxable_fed  = clamp_nonneg(dividend * incl_fed + max(0.0, reclass_base - ee_reclass) + other_inc - private_deductions)
+    taxable_cant = clamp_nonneg(dividend * incl_cat + max(0.0, reclass_base - ee_reclass) + other_inc - private_deductions)
 
-    # ------------------------- Anzeige ------------------------------------------
-    st.subheader("💼 Szenario A – Lohn")
-    st.write(f"Bruttolohn: **CHF {salary:,.0f}**")
+    fed_tax  = federal_income_tax(taxable_fed)
+    cant_tax = cantonal_income_tax(taxable_cant, canton, commune)
+    cant_tax *= (1.0 + church_rate)
+    income_tax = fed_tax + cant_tax
+
+    # Netto: Dividendenauszahlung minus Steuer minus AN-AHV auf reklassifizierten Teil
+    net = dividend - income_tax - ee_reclass
+
+    # AG-AHV ist bereits in der Iteration durch reduzierten Nachsteuergewinn berücksichtigt (via Tax Shield).
+    corp_tax = (profit - AHV_employer * reclass_base) * total_corp  # für Anzeige (annähernd)
+
+    return {
+        "dividend": dividend,
+        "reclass_base": reclass_base,
+        "ee_reclass": ee_reclass,
+        "corp_tax": corp_tax,
+        "income_tax": income_tax,
+        "net": net,
+        "components": dict(incl_fed=incl_fed, incl_cat=incl_cat, fed_tax=fed_tax, cant_tax=cant_tax)
+    }
+
+# ------------------------- Optimizer: Lohn + Dividende Mischung -----------------
+def compute_net_for_salary_mix(salary_choice):
+    """Allgemeine Mischung:
+       - zahlt Lohn = salary_choice (mit AG/AN Beiträgen & Overheads)
+       - schüttet Rest als Dividende aus (inkl. AHV-Umqualifizierung, falls salary_choice < min_salary)
+    """
+    salary_choice = clamp_nonneg(min(salary_choice, profit))
+    # AG-Kosten & AN-Abzüge für den Lohnteil
+    ahv_emp, alv_emp, bvg_emp, extra = employer_costs_on_salary(salary_choice, ahv_on=(ahv_subject == "Ja"))
+    employer_cost = ahv_emp + alv_emp + bvg_emp + extra
+    ahv_ee, alv_ee, bvg_ee, ee_total = employee_deductions_on_salary(salary_choice, ahv_on=(ahv_subject == "Ja"))
+
+    # Gewinn nach Lohn
+    profit_after_salary = clamp_nonneg(profit - salary_choice - employer_cost)
+
+    # Körperschaftsteuer auf Restgewinn (vor evtl. AG-AHV auf Umqualifizierung)
+    corp_tax_pre = profit_after_salary * total_corp
+    after_corp_pre = profit_after_salary - corp_tax_pre
+
+    # Obergrenze für Dividende gemäss gewünschter Auszahlung
+    desired_left = None
+    if desired_income is not None:
+        desired_left = clamp_nonneg(desired_income - salary_choice)
+
+    qualifies = qualifies_partial_taxation(share_pct)
+    incl_fed = get_div_incl_fed(qualifies)
+    incl_cat = get_div_incl_canton(canton, qualifies)
+
+    # Iteration für AHV-Umqualifizierung auf Dividenden-Teil
+    dividend_guess = min(after_corp_pre, desired_left) if desired_left is not None else after_corp_pre
+    reclass_base = 0.0
+    for _ in range(30):
+        want_reclass = ahv_risk and (salary_choice < min_salary) and (dividend_guess > 0)
+        if want_reclass:
+            shortfall = clamp_nonneg(min_salary - salary_choice)
+            reclass_base = min(shortfall, dividend_guess)
+        else:
+            reclass_base = 0.0
+
+        ag_reclass_cost = AHV_employer * reclass_base
+        # Tax Shield auf AG-AHV: Nachsteuer-Abgang = C * (1 - total_corp)
+        after_corp_new = after_corp_pre - ag_reclass_cost * (1.0 - total_corp)
+        dividend_new = min(after_corp_new, desired_left) if desired_left is not None else after_corp_new
+        if abs(dividend_new - dividend_guess) < 0.5:
+            dividend_guess = dividend_new
+            break
+        dividend_guess = dividend_new
+
+    dividend = clamp_nonneg(dividend_guess)
+    ee_reclass = AHV_employee * reclass_base if reclass_base > 0 else 0.0
+
+    # Steuerbar: (Lohnteil netto-steuerbar) + (reklassifizierter Div.-Teil als Lohn) + (Div.-Teil teilbesteuert) + weitere Einkünfte − private Abzüge
+    taxable_salary_part = clamp_nonneg(salary_choice - ee_total)
+    taxable_reclass     = clamp_nonneg(reclass_base - ee_reclass)
+
+    taxable_fed  = clamp_nonneg(taxable_salary_part + taxable_reclass + dividend * incl_fed + other_inc - private_deductions)
+    taxable_cant = clamp_nonneg(taxable_salary_part + taxable_reclass + dividend * incl_cat + other_inc - private_deductions)
+
+    fed_tax  = federal_income_tax(taxable_fed)
+    cant_tax = cantonal_income_tax(taxable_cant, canton, commune) * (1.0 + church_rate)
+    income_tax = fed_tax + cant_tax
+
+    net = (salary_choice - ee_total) + (dividend - ee_reclass) - income_tax
+
+    # Für Anzeige: Körperschaftssteuer nach AG-AHV-Umqualifizierung
+    corp_tax = corp_tax_pre + 0.0  # näherungsweise; präziser wäre: (profit_after_salary - ag_reclass_cost) * total_corp
+    corp_tax = (profit_after_salary - AHV_employer * reclass_base) * total_corp
+
+    return {
+        "salary": salary_choice,
+        "dividend": dividend,
+        "reclass_base": reclass_base,
+        "ee_salary": ee_total,
+        "ee_reclass": ee_reclass,
+        "employer_cost": employer_cost,
+        "corp_tax": corp_tax,
+        "income_tax": income_tax,
+        "net": net,
+        "components": dict(incl_fed=incl_fed, incl_cat=incl_cat, fed_tax=fed_tax, cant_tax=cant_tax)
+    }
+
+def optimizer_best_mix():
+    step = 1000.0
+    max_salary = profit if desired_income is None else min(profit, desired_income)
+    best = None
+    s = 0.0
+    while s <= max_salary + 1e-6:
+        res = compute_net_for_salary_mix(s)
+        if (best is None) or (res["net"] > best["net"]):
+            best = res
+        s += step
+    return best
+
+# ------------------------- Main Rendering ---------------------------------------
+if profit > 0:
+    # Szenario A
+    A = scenario_salary_only()
+
+    # Szenario B
+    B = scenario_dividend_only()
+
+    # Anzeige Szenario A
+    st.subheader("💼 Szenario A – Lohn (100 %)")
+    st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
     if ahv_subject == "Ja":
-        st.write(f"Arbeitgeber AHV/ALV/BVG: CHF {(ahv_emp+alv_emp+bvg_emp):,.0f}")
-        st.write(f"Arbeitgeber-Overheads FAK/UVG/KTG: CHF {(fak_cost+uvg_cost):,.0f}")
-        st.write(f"Arbeitnehmer AHV/ALV/BVG (steuerlich abzugsfähig): CHF {employee_deductions:,.0f}")
+        st.write(f"Arbeitgeber AHV/ALV/BVG: CHF {(A['components']['ahv_emp']+A['components']['alv_emp']+A['components']['bvg_emp']):,.0f}")
+        st.write(f"Arbeitgeber-Overheads FAK/UVG/KTG: CHF {A['components']['extra']:,.0f}")
+        st.write(f"Arbeitnehmer AHV/ALV/BVG (steuerlich abzugsfähig): CHF {A['ee_total']:,.0f}")
     else:
         st.write("Keine Sozialabgaben.")
-    st.write(f"Körperschaftssteuer Restgewinn: CHF {corp_tax_A:,.0f}")
-    st.write(f"Einkommenssteuer (Bund+Kanton/Gemeinde): CHF {income_tax_A:,.0f}")
-    st.success(f"**Netto an Inhaber:** CHF {net_A:,.0f}")
+    st.write(f"Körperschaftssteuer Restgewinn: CHF {A['corp_tax']:,.0f}")
+    st.write(f"Einkommenssteuer (Bund+Kanton/Gemeinde{(' + Kirche' if church_rate>0 else '')}): CHF {A['income_tax']:,.0f}")
+    st.success(f"**Netto an Inhaber:** CHF {A['net']:,.0f}")
 
-    st.subheader("📈 Szenario B – Dividende")
-    st.write(f"Dividende: **CHF {dividend_base:,.0f}**")
-    st.write(f"Körperschaftssteuer (auf Gewinn): CHF {corp_tax_B:,.0f}")
-    teil_txt = f"Bund {int(incl_fed*100)} % / Kanton {int(incl_cat*100)} % (bei Beteiligung {share_pct:.0f} %)"
-    st.write(f"Private Steuer (Teilbesteuerung): {teil_txt} ⇒ CHF {income_tax_B:,.0f}")
-    if ahv_reclass_base > 0:
+    # Anzeige Szenario B
+    st.subheader("📈 Szenario B – Dividende (100 %)")
+    st.write(f"Dividende: **CHF {B['dividend']:,.0f}**")
+    st.write(f"Körperschaftssteuer (nach evtl. AG-AHV auf Umqualifizierung): CHF {B['corp_tax']:,.0f}")
+    qualifies = qualifies_partial_taxation(share_pct)
+    incl_fed = get_div_incl_fed(qualifies)
+    incl_cat = get_div_incl_canton(canton, qualifies)
+    teil_txt = f"Bund {int(incl_fed*100)} % / Kanton {int(incl_cat*100)} % (Beteiligung {share_pct:.0f} %)"
+    st.write(f"Private Steuer (Teilbesteuerung): {teil_txt} ⇒ CHF {B['income_tax']:,.0f}")
+    if B["reclass_base"] > 0:
         st.write(
-            f"AHV-Umqualifizierung (Basis: CHF {ahv_reclass_base:,.0f}) – "
-            f"AG-Anteil: CHF {ahv_emp_reclass:,.0f}, AN-Anteil: CHF {ahv_ee_reclass:,.0f}"
+            f"AHV-Umqualifizierung (Basis: CHF {B['reclass_base']:,.0f}) – "
+            f"AN-AHV: CHF {B['ee_reclass']:,.0f} (AG-AHV via Gewinn & Steuerschild bereits berücksichtigt)"
         )
-    st.success(f"**Netto an Inhaber:** CHF {net_B:,.0f}")
+    st.success(f"**Netto an Inhaber:** CHF {B['net']:,.0f}")
 
+    # Vergleich
     st.markdown("---")
-    st.subheader("🔹 Vergleich")
-    col1c, col2c, col3c = st.columns(3)
-    with col1c: st.metric("Netto Lohn", f"CHF {net_A:,.0f}")
-    with col2c: st.metric("Netto Dividende", f"CHF {net_B:,.0f}")
-    with col3c:
-        diff = net_B - net_A
-        better = "Dividende" if diff > 0 else ("Lohn" if diff < 0 else "–")
-        st.metric("Vorteil", better, f"CHF {abs(diff):,.0f}")
+    st.subheader("🔹 Vergleich (100 % Lohn vs. 100 % Dividende)")
+    c1, c2, c3 = st.columns(3)
+    with c1: st.metric("Netto Lohn", f"CHF {A['net']:,.0f}")
+    with c2: st.metric("Netto Dividende", f"CHF {B['net']:,.0f}")
+    diff = B["net"] - A["net"]
+    better = "Dividende" if diff > 0 else ("Lohn" if diff < 0 else "–")
+    with c3: st.metric("Vorteil", better, f"CHF {abs(diff):,.0f}")
 
-    if net_A > net_B:
-        st.info(f"💡 **Lohn** ist besser um **CHF {net_A - net_B:,.0f}**.")
-    elif net_B > net_A:
-        st.info(f"💡 **Dividende** ist besser um **CHF {net_B - net_A:,.0f}**.")
-    else:
-        st.info("✅ Beide Varianten ergeben denselben Nettobetrag.")
+    # Optimizer
+    if optimizer_on:
+        st.markdown("---")
+        st.subheader("🧠 Optimierer – beste Mischung (Lohn + Dividende)")
+        best = optimizer_best_mix()
+        st.write(
+            f"**Optimaler Lohn:** CHF {best['salary']:,.0f} | "
+            f"**Dividende:** CHF {best['dividend']:,.0f} "
+            f"{'(inkl. AHV-Umqualifizierung von CHF ' + f'{best['reclass_base']:,.0f}' + ')' if best['reclass_base']>0 else ''}"
+        )
+        st.write(f"Einkommenssteuer gesamt: CHF {best['income_tax']:,.0f}")
+        st.success(f"**Max. Netto an Inhaber:** CHF {best['net']:,.0f}")
 
+    # Debug
     if debug_mode:
+        st.markdown("---")
         st.subheader("🔍 Debug-Informationen")
         st.write(
             f"**Körperschaftssteuer gesamt:** {total_corp:.2%} "
             f"(Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})"
         )
+        # A
         st.write(
-            f"**Einkommen (Lohn) steuerbar:** CHF {taxable_A:,.0f}  "
-            f"(Brutto {salary:,.0f} − AN-Beiträge {employee_deductions:,.0f} + weitere Einkünfte {other_inc:,.0f})"
+            f"**Szenario A – steuerbar:** "
+            f"CHF {clamp_nonneg(A['salary'] - A['ee_total'] + other_inc - private_deductions):,.0f}  "
+            f"(Brutto {A['salary']:,.0f} − AN-Beiträge {A['ee_total']:,.0f} + weitere {other_inc:,.0f} − Abzüge {private_deductions:,.0f})"
         )
         st.write(
-            f"**Teilbesteuerung aktiv:** {'Ja' if qualifies else 'Nein'} | "
-            f"Bund {incl_fed:.0%}, Kanton {incl_cat:.0%}"
+            f"**A – Steueraufteilung:** Bund CHF {A['components']['fed_tax']:,.0f} | "
+            f"Kanton/Gemeinde{(' + Kirche' if church_rate>0 else '')}: CHF {A['components']['cant_tax']:,.0f}"
         )
-        if ahv_reclass_base > 0:
-            st.write(
-                f"**AHV-Umqualifizierung:** Basis {ahv_reclass_base:,.0f} | "
-                f"AG {ahv_emp_reclass:,.0f} | AN {ahv_ee_reclass:,.0f}"
-            )
+        # B
         st.write(
-            f"**BVG-Parameter:** Satz gesamt {selected_bvg_rate:.0%}, "
-            f"Eintritt {BVG_entry_threshold:,.0f} CHF, Koord.-Abzug {BVG_coord_deduction:,.0f} CHF, "
-            f"Max vers. Lohn {BVG_max_insured:,.0f} CHF"
+            f"**Szenario B – steuerbar (Bund):** "
+            f"CHF {clamp_nonneg(B['dividend']*incl_fed + max(0.0, B['reclass_base'] - B['ee_reclass']) + other_inc - private_deductions):,.0f}"
         )
-        st.caption("Hinweise: Verrechnungssteuer (35 %) = Liquiditätsthema; "
-                   "Umqualifizierung vereinfacht (Steuerlogik der reklassifizierten Portion nicht separat modelliert).")
+        st.write(
+            f"**Szenario B – steuerbar (Kanton):** "
+            f"CHF {clamp_nonneg(B['dividend']*incl_cat + max(0.0, B['reclass_base'] - B['ee_reclass']) + other_inc - private_deductions):,.0f}"
+        )
+        st.write(
+            f"**B – Steueraufteilung:** Bund CHF {B['components']['fed_tax']:,.0f} | "
+            f"Kanton/Gemeinde{(' + Kirche' if church_rate>0 else '')}: CHF {B['components']['cant_tax']:,.0f}"
+        )
+        st.caption(
+            "Hinweise: Verrechnungssteuer (35 %) ist ein Liquiditätsthema, wird i. d. R. via Veranlagung zurückgefordert. "
+            "AHV-Umqualifizierung vereinfacht (ALV/BVG typ. nicht auf Dividenden)."
+        )
+
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
