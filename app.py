@@ -1,4 +1,4 @@
-# app.py – Schweizer Lohn vs. Dividende Rechner (Beste Version)
+# app.py – Schweizer Lohn vs. Dividende Rechner (Patched)
 import json, math, pathlib
 import streamlit as st
 
@@ -22,19 +22,55 @@ def load_json(name, default):
         st.warning(f"Datei {files[name]} nicht gefunden. Standardwerte werden verwendet.")
         return default
 
+def is_nan(x):
+    try:
+        return isinstance(x, float) and math.isnan(x)
+    except:
+        return False
+
 def nan_to_zero(x):
-    return 0.0 if (x is None or (isinstance(x, float) and math.isnan(x))) else x
+    return 0.0 if (x is None or is_nan(x)) else x
 
 # ------------------------- Daten laden ------------------------------------------
 steuerfuesse          = load_json("steuer", [])
 income_tax_cantons    = load_json("cant_income", {})
-income_tax_conf       = sorted(
-    load_json("fed_income", []),
-    key=lambda d: d.get("Taxable income for federal tax", 0) or 0
-)
+income_tax_conf_raw   = load_json("fed_income", [])
 corporate_tax         = load_json("corp_tax", {})
 social_sec            = load_json("social", {})
 dividend_inclusion    = load_json("div_inclusion", {})
+
+# --- Bundessteuer-Brackets minimal säubern u. sortieren (robuster gg. Duplikate) ---
+def normalize_fed_brackets(raw):
+    cleaned = []
+    seen = set()
+    for d in raw:
+        thr  = d.get("Taxable income for federal tax", 0)
+        base = d.get("Base amount CHF", 0)
+        rate = d.get("Additional %", 0)
+        if thr is None or base is None or rate is None:
+            continue
+        if any(is_nan(v) for v in (thr, base, rate)):
+            continue
+        try:
+            thr  = float(thr)
+            base = float(base)
+            rate = float(rate) / 100.0
+        except:
+            continue
+        if thr < 0:
+            continue
+        if thr in seen:
+            # Bei identischem Schwellenwert erstem Eintrag den Vorzug geben
+            continue
+        seen.add(thr)
+        cleaned.append({"thr": thr, "base": base, "rate": rate})
+    cleaned.sort(key=lambda x: x["thr"])
+    # Sicherstellen, dass die unterste Stufe bei 0 beginnt
+    if not cleaned or cleaned[0]["thr"] > 0:
+        cleaned.insert(0, {"thr": 0.0, "base": 0.0, "rate": 0.0})
+    return cleaned
+
+income_tax_conf = normalize_fed_brackets(income_tax_conf_raw)
 
 # ------------------------- Sozialversicherungen ---------------------------------
 AHV_employer   = social_sec.get("AHV_IV_EO_EmployerShare", 0.053)
@@ -43,14 +79,13 @@ AHV_employee   = social_sec.get("AHV_IV_EO_EmployeeShare", 0.053)
 ALV_employer   = social_sec.get("ALV_EmployerShare", 0.011)
 ALV_employee   = social_sec.get("ALV_EmployeeShare", 0.011)
 ALV_ceiling    = social_sec.get("ALV_Ceiling", 148200.0)
-# Ab 2025 kein ALV-Solidaritätsbeitrag mehr
-ALV_solidarity = 0.0  
+ALV_solidarity = 0.0  # seit 2025 abgeschafft
 
 BVG_rates = {
     "25-34": social_sec.get("BVG_Rate_25_34", 0.07),
     "35-44": social_sec.get("BVG_Rate_35_44", 0.10),
     "45-54": social_sec.get("BVG_Rate_45_54", 0.15),
-    "55-65": social_sec.get("BVG_Rate_55_65", 0.18)
+    "55-65": social_sec.get("BVG_Rate_55_65", 0.18),
 }
 BVG_entry_threshold = social_sec.get("BVG_EntryThreshold", 22680.0)
 BVG_coord_deduction = social_sec.get("BVG_CoordDeduction", 26460.0)
@@ -69,7 +104,7 @@ for k in canton_to_communes:
 
 if not canton_to_communes:
     st.error("Keine Steuerdaten gefunden. Fallback aktiviert.")
-    canton_to_communes = {"Zürich": ["Zürich"], "Bern": ["Bern"]}
+    canton_to_communes = {"ZH": ["Zürich"], "BE": ["Bern"]}
 
 # ------------------------- UI ---------------------------------------------------
 st.title("🇨🇭 Vergleich: Lohn vs. Dividende")
@@ -80,11 +115,11 @@ with col1:
     profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
     desired_income = st.number_input("Gewünschte Auszahlung an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
     ahv_subject    = st.radio("AHV/ALV-Beiträge?", ["Ja", "Nein"])
-    age_band = st.selectbox("Altersband (BVG)", 
-                           ["25-34 (7%)", "35-44 (10%)", "45-54 (15%)", "55-65 (18%)"], 
-                           index=1)
+    age_band = st.selectbox("Altersband (BVG)",
+                            ["25-34 (7%)", "35-44 (10%)", "45-54 (15%)", "55-65 (18%)"],
+                            index=1)
 with col2:
-    canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()))
+    canton   = st.selectbox("Kanton (Abkürzung)", sorted(canton_to_communes.keys()))
     commune  = st.selectbox("Gemeinde", canton_to_communes.get(canton, ["Default"]))
     other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
@@ -95,159 +130,194 @@ if desired_income == 0:
 elif desired_income > profit:
     desired_income = profit
 
-# ------------------------- Bundessteuer korrekt ---------------------------------
+# ------------------------- Bundessteuer -----------------------------------------
 def federal_income_tax(taxable):
-    if taxable <= 0: return 0.0
-    if not income_tax_conf:
-        return taxable * 0.115
-
-    # Finde die passende Stufe
-    prev_threshold = 0
-    for bracket in income_tax_conf:
-        threshold = bracket["Taxable income for federal tax"]
-        base = bracket["Base amount CHF"]
-        rate = bracket["Additional %"]/100
-        if taxable <= threshold:
-            return base + (taxable - prev_threshold) * rate
-        prev_threshold = threshold
-    # Über oberster Stufe
+    """
+    Piecewise-linear: für die Stufe i gilt Steuer = base_i + (taxable - thr_{i-1}) * rate_i, sofern taxable <= thr_i.
+    Für taxable über der höchsten Stufe: base_top + (taxable - thr_top) * rate_top.
+    """
+    if taxable <= 0:
+        return 0.0
+    prev_thr = 0.0
+    for i, b in enumerate(income_tax_conf):
+        thr, base, rate = b["thr"], b["base"], b["rate"]
+        if taxable <= thr:
+            return base + (taxable - prev_thr) * rate
+        prev_thr = thr
     top = income_tax_conf[-1]
-    return top["Base amount CHF"] + (taxable - prev_threshold) * (top["Additional %"]/100)
+    return top["base"] + (taxable - top["thr"]) * top["rate"]
 
 # ------------------------- Kantonssteuer ----------------------------------------
 def cantonal_income_tax(taxable, kanton, gemeinde):
-    if taxable <= 0: return 0.0
+    if taxable <= 0:
+        return 0.0
     brackets = income_tax_cantons.get(kanton, [])
     cantonal_base_tax = 0.0
     remaining = taxable
     for bracket in brackets:
-        chunk_size = bracket.get("For the next CHF", 0)
-        rate = bracket.get("Additional %", 0)/100
+        chunk_size = bracket.get("For the next CHF", 0) or 0
+        rate = (bracket.get("Additional %", 0) or 0) / 100.0
         if chunk_size == 0:
-            cantonal_base_tax += remaining*rate
+            cantonal_base_tax += remaining * rate
             remaining = 0
             break
         chunk = min(remaining, chunk_size)
-        cantonal_base_tax += chunk*rate
+        cantonal_base_tax += chunk * rate
         remaining -= chunk
-        if remaining <= 0: break
-    if remaining>0 and brackets:
-        cantonal_base_tax += remaining*(brackets[-1].get("Additional %",0)/100)
-    # Multiplier anwenden
+        if remaining <= 0:
+            break
+    if remaining > 0 and brackets:
+        cantonal_base_tax += remaining * (brackets[-1].get("Additional %", 0) / 100.0)
+
+    # Multiplikatoren anwenden (Kanton + Gemeinde)
     kant_mult, comm_mult = 1.0, 0.0
     for row in steuerfuesse:
-        if row.get("Kanton")==kanton and row.get("Gemeinde")==gemeinde:
-            kant_mult = nan_to_zero(row.get("Einkommen_Kanton",1.0))
-            comm_mult = nan_to_zero(row.get("Einkommen_Gemeinde",0.0))
+        if row.get("Kanton") == kanton and row.get("Gemeinde") == gemeinde:
+            kant_mult = nan_to_zero(row.get("Einkommen_Kanton", 1.0))
+            comm_mult = nan_to_zero(row.get("Einkommen_Gemeinde", 0.0))
             break
-    return cantonal_base_tax*kant_mult + cantonal_base_tax*comm_mult
+    return cantonal_base_tax * (kant_mult + comm_mult)
 
 # ------------------------- Dividendenteilbesteuerung ----------------------------
 def get_dividend_inclusion_rate(kanton):
-    return dividend_inclusion.get(kanton,0.70)
+    return dividend_inclusion.get(kanton, 0.70)
 
 # ------------------------- Berechnung -------------------------------------------
-if profit>0:
-    # Körperschaftssteuer
+if profit > 0:
+    # Körperschaftssteuer (Bund fix 8.5% wenn nicht in JSON)
     fed_corp = corporate_tax.get("Confederation", 0.085)
-    cant_corp_data = corporate_tax.get(canton,0.0)
-    if isinstance(cant_corp_data,dict):
-        cant_corp_base = cant_corp_data.get("rate", cant_corp_data.get("cantonal",0.0))
-    else:
-        cant_corp_base = nan_to_zero(cant_corp_data)
-    canton_mult, comm_mult = 1.0,0.0
+
+    # Kantonalbasisrate: einzelner Wert oder 0 bei NaN
+    cant_corp_base = nan_to_zero(corporate_tax.get(canton, 0.0))
+
+    # Lokale Multiplikatoren für Gewinnsteuer (Kanton + Gemeinde)
+    canton_mult, comm_mult = 1.0, 0.0
     for row in steuerfuesse:
-        if row.get("Kanton")==canton and row.get("Gemeinde")==commune:
-            canton_mult = nan_to_zero(row.get("Gewinn_Kanton",1.0))
-            comm_mult   = nan_to_zero(row.get("Gewinn_Gemeinde",0.0))
+        if row.get("Kanton") == canton and row.get("Gemeinde") == commune:
+            canton_mult = nan_to_zero(row.get("Gewinn_Kanton", 1.0))
+            comm_mult   = nan_to_zero(row.get("Gewinn_Gemeinde", 0.0))
             break
-    local_corp = cant_corp_base*(canton_mult+comm_mult)
-    total_corp = fed_corp+local_corp
+    local_corp = cant_corp_base * (canton_mult + comm_mult)
+    total_corp = fed_corp + local_corp
 
-    # BVG
+    # BVG Sätze (AG/AN je hälftig)
     age_key = age_band.split()[0]
-    selected_bvg_rate = BVG_rates.get(age_key,BVG_rates["35-44"])
-    bvg_employee_rate = selected_bvg_rate/2
-    bvg_employer_rate = selected_bvg_rate/2
+    selected_bvg_rate = BVG_rates.get(age_key, BVG_rates["35-44"])
+    bvg_employee_rate = selected_bvg_rate / 2
+    bvg_employer_rate = selected_bvg_rate / 2
 
-    # Szenario A: Lohn
+    # ----------------- Szenario A: Lohn -----------------
     salary = min(desired_income if desired_income is not None else profit, profit)
-    if ahv_subject=="Ja":
+
+    # Sozialabgaben vorbereiten (AN/AG)
+    ahv_ee = alv_ee = bvg_ee = 0.0
+    ahv_emp = alv_emp = bvg_emp = 0.0
+
+    if ahv_subject == "Ja":
         # Arbeitgeber
-        ahv_emp = AHV_employer*salary
-        alv_emp = ALV_employer*min(salary,ALV_ceiling)
-        bvg_emp = 0.0
-        if salary>=BVG_entry_threshold:
-            insured = max(0,min(salary,BVG_max_insured)-BVG_coord_deduction)
-            bvg_emp = bvg_employer_rate*insured
-        employer_cost = ahv_emp+alv_emp+bvg_emp
+        ahv_emp = AHV_employer * salary
+        alv_emp = ALV_employer * min(salary, ALV_ceiling)
+        insured_emp = 0.0
+        if salary >= BVG_entry_threshold:
+            insured_emp = max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
+            bvg_emp = bvg_employer_rate * insured_emp
+        employer_cost = ahv_emp + alv_emp + bvg_emp
+
         # Arbeitnehmer
-        ahv_ee = AHV_employee*salary
-        alv_ee = ALV_employee*min(salary,ALV_ceiling)
-        bvg_ee = 0.0
-        if salary>=BVG_entry_threshold:
-            insured = max(0,min(salary,BVG_max_insured)-BVG_coord_deduction)
-            bvg_ee = bvg_employee_rate*insured
-        employee_deductions = ahv_ee+alv_ee+bvg_ee
+        ahv_ee = AHV_employee * salary
+        alv_ee = ALV_employee * min(salary, ALV_ceiling)
+        insured_ee = 0.0
+        if salary >= BVG_entry_threshold:
+            insured_ee = max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
+            bvg_ee = bvg_employee_rate * insured_ee
+        employee_deductions = ahv_ee + alv_ee + bvg_ee
     else:
-        employer_cost = employee_deductions = 0.0
+        employer_cost = 0.0
+        employee_deductions = 0.0
 
-    profit_after_salary = max(0.0,profit-salary-employer_cost)
-    corp_tax_A  = profit_after_salary*total_corp
-    taxable_A   = salary+other_inc
-    income_tax_A= federal_income_tax(taxable_A)+cantonal_income_tax(taxable_A,canton,commune)
-    net_A       = salary-employee_deductions-income_tax_A
+    profit_after_salary = profit - salary - employer_cost
+    if profit_after_salary < 0:
+        st.warning(
+            "Der Bruttolohn inkl. Arbeitgeberabgaben übersteigt den Gewinn – "
+            "der steuerbare Firmengewinn wird auf 0 gesetzt. Für realistische Vergleiche Lohn reduzieren."
+        )
+    profit_after_salary = max(0.0, profit_after_salary)
 
-    # Szenario B: Dividende
-    corp_tax_B  = profit*total_corp
-    after_corp  = max(0.0, profit-corp_tax_B)
+    corp_tax_A   = profit_after_salary * total_corp
+
+    # *** WICHTIGER FIX: Lohn steuerbar = Brutto - abzugsfähige AN-Beiträge + weitere Einkünfte ***
+    taxable_A    = max(0.0, salary - employee_deductions) + other_inc
+    income_tax_A = federal_income_tax(taxable_A) + cantonal_income_tax(taxable_A, canton, commune)
+    net_A        = salary - employee_deductions - income_tax_A
+
+    # ----------------- Szenario B: Dividende -----------------
+    corp_tax_B  = profit * total_corp
+    after_corp  = max(0.0, profit - corp_tax_B)
     dividend    = min(after_corp, desired_income) if desired_income else after_corp
-    # Bundessteuer 70%, Kanton JSON
+
     income_tax_B = (
-        federal_income_tax(dividend*0.70+other_inc)
-        + cantonal_income_tax(dividend*get_dividend_inclusion_rate(canton)+other_inc,canton,commune)
+        federal_income_tax(dividend * 0.70 + other_inc) +
+        cantonal_income_tax(dividend * get_dividend_inclusion_rate(canton) + other_inc, canton, commune)
     )
-    net_B       = dividend-income_tax_B
+    net_B       = dividend - income_tax_B
 
     # ------------------------- Anzeige ------------------------------------------
     st.subheader("💼 Szenario A – Lohn")
     st.write(f"Bruttolohn: **CHF {salary:,.0f}**")
-    if ahv_subject=="Ja":
+    if ahv_subject == "Ja":
         st.write(f"Arbeitgeber AHV/ALV/BVG: CHF {employer_cost:,.0f}")
-        st.write(f"Arbeitnehmer AHV/ALV/BVG: CHF {employee_deductions:,.0f}")
+        st.write(f"Arbeitnehmer AHV/ALV/BVG (steuerlich abzugsfähig): CHF {employee_deductions:,.0f}")
     else:
         st.write("Keine Sozialabgaben.")
     st.write(f"Körperschaftssteuer Restgewinn: CHF {corp_tax_A:,.0f}")
-    st.write(f"Einkommenssteuer: CHF {income_tax_A:,.0f}")
+    st.write(f"Einkommenssteuer (Bund+Kanton/Gemeinde): CHF {income_tax_A:,.0f}")
     st.success(f"**Netto an Inhaber:** CHF {net_A:,.0f}")
 
     st.subheader("📈 Szenario B – Dividende")
     st.write(f"Dividende: **CHF {dividend:,.0f}**")
     st.write(f"Körperschaftssteuer (auf Gewinn): CHF {corp_tax_B:,.0f}")
-    st.write(f"Private Steuer (Bund 70% / Kanton {int(get_dividend_inclusion_rate(canton)*100)}%): CHF {income_tax_B:,.0f}")
+    st.write(
+        f"Private Steuer (Bund 70 % / Kanton {int(get_dividend_inclusion_rate(canton)*100)} %): "
+        f"CHF {income_tax_B:,.0f}"
+    )
     st.success(f"**Netto an Inhaber:** CHF {net_B:,.0f}")
 
     st.markdown("---")
     st.subheader("🔹 Vergleich")
-    col1,col2,col3=st.columns(3)
+    col1, col2, col3 = st.columns(3)
     with col1: st.metric("Netto Lohn", f"CHF {net_A:,.0f}")
     with col2: st.metric("Netto Dividende", f"CHF {net_B:,.0f}")
     with col3:
-        diff=net_B-net_A
-        better="Dividende" if diff>0 else "Lohn"
+        diff = net_B - net_A
+        better = "Dividende" if diff > 0 else ("Lohn" if diff < 0 else "–")
         st.metric("Vorteil", better, f"CHF {abs(diff):,.0f}")
 
-    if net_A>net_B:
-        st.info(f"💡 **Lohn** ist besser um **CHF {net_A-net_B:,.0f}**.")
-    elif net_B>net_A:
-        st.info(f"💡 **Dividende** ist besser um **CHF {net_B-net_A:,.0f}**.")
+    if net_A > net_B:
+        st.info(f"💡 **Lohn** ist besser um **CHF {net_A - net_B:,.0f}**.")
+    elif net_B > net_A:
+        st.info(f"💡 **Dividende** ist besser um **CHF {net_B - net_A:,.0f}**.")
     else:
         st.info("✅ Beide Varianten ergeben denselben Nettobetrag.")
 
     if debug_mode:
         st.subheader("🔍 Debug-Informationen")
-        st.write(f"**Körperschaftssteuer gesamt:** {total_corp:.2%} (Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})")
-        st.write(f"**Dividenden-Teilbesteuerung:** Bund 70%, Kanton {get_dividend_inclusion_rate(canton):.0%}")
-        st.write(f"**BVG:** Satz {selected_bvg_rate:.0%}, Eintritt {BVG_entry_threshold:,.0f} CHF, Koord. {BVG_coord_deduction:,.0f} CHF")
+        st.write(
+            f"**Körperschaftssteuer gesamt:** {total_corp:.2%} "
+            f"(Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})"
+        )
+        st.write(
+            f"**Einkommen (Lohn) steuerbar:** CHF {taxable_A:,.0f}  "
+            f"(Brutto {salary:,.0f} − AN-Beiträge {employee_deductions:,.0f} + weitere Einkünfte {other_inc:,.0f})"
+        )
+        st.write(
+            f"**Dividenden-Teilbesteuerung:** Bund 70 %, "
+            f"Kanton {get_dividend_inclusion_rate(canton):.0%}"
+        )
+        st.write(
+            f"**BVG-Parameter:** Satz gesamt {selected_bvg_rate:.0%}, "
+            f"Eintritt {BVG_entry_threshold:,.0f} CHF, Koord.-Abzug {BVG_coord_deduction:,.0f} CHF, "
+            f"Max vers. Lohn {BVG_max_insured:,.0f} CHF"
+        )
+        st.caption("Hinweis: Verrechnungssteuer (35 %) ist Liquiditätsthema und wird hier nicht separat ausgewiesen.")
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
