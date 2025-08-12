@@ -1,4 +1,4 @@
-# app.py – Schweizer Lohn vs. Dividende Rechner (Maximally Patched & Meticulous)
+# app.py – Schweizer Lohn vs. Dividende Rechner 
 import json, math, pathlib
 import streamlit as st
 
