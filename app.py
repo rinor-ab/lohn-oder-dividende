@@ -1,8 +1,36 @@
 # app.py – Lohn vs. Dividende vs. Thesaurierung
-# Form-based UX + tax savings summary (TREX + Vontobel aligned)
+# Form-based UX + tax savings summary (TREX + Vontobel aligned) + subtle styling
 import json, math, pathlib
 import streamlit as st
 
+# ------------------------- App Style -------------------------
+def inject_style():
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] {background: #0b1020;}
+        [data-testid="stHeader"] {background: rgba(0,0,0,0);}
+        :root {--card-bg: #121a36; --muted:#9db0ff; --ink:#e9eeff; --accent:#7aa2ff;}
+        h1,h2,h3,h4 { color: var(--ink) !important; }
+        .caption, .help, p, li, label, .stRadio, .stMarkdown, .stSelectbox, .stNumberInput { color: #cfe1ff !important; }
+        .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#18224a; color:#cfe1ff; border:1px solid #243064; }
+        .card { background: var(--card-bg); border: 1px solid #243064; border-radius:16px; padding:16px 18px; }
+        .kpi { border-radius:16px; padding:14px 16px; background:#0f1530; border:1px solid #27305c; }
+        .kpi h3 { margin:0; color:#dfe7ff; font-size:16px; font-weight:600; }
+        .kpi .v { font-size:20px; font-weight:700; color:#ffffff;}
+        .divider { height:1px; background:linear-gradient(90deg,#1a265c,transparent); margin:14px 0 10px 0;}
+        .btn-primary button { background: linear-gradient(135deg,#4361ee,#5a78ff); border:0; }
+        .btn-primary button:hover { filter: brightness(1.05); }
+        .accent { color: var(--accent); }
+        .muted { color: var(--muted); }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+inject_style()
+
+# ------------------------- Data Files -------------------------
 DATA_DIR = pathlib.Path(__file__).parent
 files = {
     "steuer": "Steuerfuesse.json",
@@ -34,6 +62,9 @@ def nz(x):
 
 def clamp(x):
     return max(0.0, float(x or 0.0))
+
+def fmt_chf(x):
+    return f"CHF {x:,.0f}".replace(",", "'")
 
 # ------------------------- Load data -----------------------
 steuerfuesse          = load_json("steuer", [])
@@ -219,8 +250,6 @@ def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church
     qualifies = qualifies_partial(share_pct)
     inc_fed, inc_cant = incl_rates(qualifies, kanton)
 
-    fed_corp, local_corp, _ = corp_tax_components(kanton, gemeinde)  # for display only
-
     # Step 1: salary logic per rule
     if rule_mode.startswith("Strikt"):
         salary = min(min_salary, profit if desired is None else min(profit, desired))
@@ -238,7 +267,7 @@ def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church
         if salary < min_salary and gross_div > 0:
             st.info("Dividende nicht zulässig, da Lohn < Mindestlohn (Strikt-Modus). Ausschüttung = 0.")
     else:
-        # Risk-based: we default to min_salary (optimizer can vary)
+        # Risk-based: allow below min but reclass difference to salary (AHV), with corporate tax shield
         salary = min(min_salary, profit if desired is None else min(profit, desired))
         ag = employer_costs(salary, age_key, ahv_on, fak_rate, uvg_rate)
         an = employee_deductions(salary, age_key, ahv_on)
@@ -289,8 +318,7 @@ def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church
         "net": net_owner, "retained_after_tax": retained_after_tax,
         "wealth_cost": wealth_cost, "adjusted_net": adjusted_net,
         "blocks": dict(ag=ag, an=an, fed=fed_tax, cant=cant_tax, reclass=reclass_base, ee_reclass=ee_reclass,
-                       inc_fed=inc_fed, inc_cant=inc_cant, ker_used=ker_used, nonker_div=nonker_div,
-                       corp_parts=(fed_corp, local_corp))
+                       inc_fed=inc_fed, inc_cant=inc_cant, ker_used=ker_used, nonker_div=nonker_div)
     }
 
 def scenario_retention(profit, wealth_pm, total_corp):
@@ -365,10 +393,18 @@ def optimize_mix(profit, desired_income, kanton, gemeinde, age_key, ahv_on, chur
         s += step
     return best
 
-# ------------------------- UI (FORM) -----------------------
-st.title("🇨🇭 Bezugsstrategie: Lohn vs. Dividende vs. Thesaurierung")
-st.caption("Form ausfüllen → **Berechnen**. In den Ergebnissen siehst du Nettos, Steuern – und die **Steuerersparnis** der optimalen Mischung.")
+# ------------------------- Header -------------------------
+st.markdown("<div class='pill'>🇨🇭 Unternehmer-Tool · Lohn vs. Dividende vs. Thesaurierung</div>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
+st.markdown(
+    "<h1>Bezugsstrategie</h1>"
+    "<p class='muted'>Wähle deine Parameter und klicke <b>Berechnen</b>. "
+    "Wir zeigen Nettos, Steuern und die <span class='accent'>Steuerersparnis</span> der optimalen Mischung.</p>",
+    unsafe_allow_html=True,
+)
+
+# ------------------------- UI (FORM) -----------------------
 with st.form("bezugs_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -376,10 +412,18 @@ with st.form("bezugs_form"):
         desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0, key="d")
         ahv_on_choice  = st.radio("AHV/ALV/BVG auf Lohn anwenden?", ["Ja", "Nein"], key="ahv")
         age_band       = st.selectbox("Altersband (BVG)", ["25-34 (7%)","35-44 (10%)","45-54 (15%)","55-65 (18%)"], index=1, key="age")
+
     with col2:
-        canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()), key="kanton")
-        commune  = st.selectbox("Gemeinde", canton_to_communes.get(st.session_state.kanton, ["Default"]), key="gemeinde")
-        other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0, key="other")
+        # Canton selector
+        canton = st.selectbox("Kanton", sorted(canton_to_communes.keys()), key="kanton")
+        # Communes depend on the current canton (fix)
+        communes = canton_to_communes.get(canton, ["Default"])
+        if "gemeinde" not in st.session_state or st.session_state.get("last_canton") != canton or st.session_state.get("gemeinde") not in communes:
+            st.session_state["gemeinde"] = communes[0] if communes else "Default"
+        st.session_state["last_canton"] = canton
+        commune = st.selectbox("Gemeinde", communes, key="gemeinde")
+
+        other_inc   = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0, key="other")
         church_rate = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5, key="church")/100.0
 
     st.markdown("#### Realitätschecks & Optionen")
@@ -399,7 +443,7 @@ with st.form("bezugs_form"):
     optimizer_on = st.checkbox("🧠 Optimierer – beste Mischung (Lohn + Dividende) finden", value=True, key="opt")
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False, key="dbg")
 
-    submitted = st.form_submit_button("🔢 Berechnen")
+    submitted = st.form_submit_button("🔢 Berechnen", help="Berechnet alle Szenarien und die optimale Mischung.", use_container_width=True)
 
 # ------------------------- Run after submit ----------------
 if submitted:
@@ -421,94 +465,149 @@ if submitted:
                               rule_mode, min_salary, share_pct, ker_amount, total_corp)
         C = scenario_retention(profit, wealth_rate_pm, total_corp)
 
-        # Anzeige A
-        st.subheader("💼 Szenario A – 100% Lohn")
-        st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
-        if ahv_on:
-            st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
-            st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
-            st.write(f"AN AHV/ALV/BVG (abzugsfähig): CHF {A['blocks']['an']['total']:,.0f}")
-        st.write(f"Körperschaftssteuer Restgewinn: CHF {A['corp_tax']:,.0f}")
-        st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {A['income_tax']:,.0f}")
-        st.write(f"**Steuern gesamt (heute): CHF {A['total_taxes']:,.0f}**")
-        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {A['retained_after_tax']:,.0f}")
-        if wealth_rate_pm>0:
-            st.write(f"Vermögenssteuer-Impact (≈): CHF {A['wealth_cost']:,.0f}")
-        st.success(f"**Netto an Inhaber (heute):** CHF {A['adjusted_net']:,.0f}")
+        # --- KPIs header ---
+        st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(f"<div class='kpi'><h3>Corporate Tax Rate</h3><div class='v'>{(total_corp*100):.2f}%</div></div>", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"<div class='kpi'><h3>Bund / Kanton+Gemeinde</h3><div class='v'>{(fed_corp*100):.1f}% / {(local_corp*100):.1f}%</div></div>", unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"<div class='kpi'><h3>Beteiligung</h3><div class='v'>{share_pct:.0f}%</div></div>", unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"<div class='kpi'><h3>Mindestlohn</h3><div class='v'>{fmt_chf(min_salary)}</div></div>", unsafe_allow_html=True)
 
-        # Anzeige B
-        st.subheader("📈 Szenario B – Lohn + Dividende")
-        st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
-        st.write(f"Körperschaftssteuer (nach Lohn): CHF {B['corp_tax']:,.0f}")
-        st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {B['income_tax']:,.0f}")
-        st.write(f"**Steuern gesamt (heute): CHF {B['total_taxes']:,.0f}**")
-        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {B['retained_after_tax']:,.0f}")
-        if B["blocks"]["reclass"]>0:
-            st.info(f"AHV-Umqualifizierung (Risikomodus): Basis CHF {B['blocks']['reclass']:,.0f} "
-                    f"(AN-AHV: CHF {B['blocks']['ee_reclass']:,.0f})")
-        st.caption(
-            f"Teilbesteuerung (auf Nicht-KER): Bund {int(B['blocks']['inc_fed']*100)}%, "
-            f"Kanton {int(B['blocks']['inc_cant']*100)}% | KER steuerfrei genutzt: CHF {B['blocks']['ker_used']:,.0f}"
-        )
-        if wealth_rate_pm>0:
-            st.write(f"Vermögenssteuer-Impact (≈): CHF {B['wealth_cost']:,.0f}")
-        st.success(f"**Netto an Inhaber (heute):** CHF {B['adjusted_net']:,.0f}")
+        # ----- A: Salary only -----
+        st.markdown("### 💼 Szenario A – 100% Lohn")
+        colA1, colA2 = st.columns([2,1])
+        with colA1:
+            st.markdown(
+                f"<div class='card'>"
+                f"<b>Bruttolohn:</b> {fmt_chf(A['salary'])}<br>"
+                f"{'AG AHV/ALV/BVG: ' + fmt_chf(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']) if ahv_on else ''}"
+                f"{'<br>AG FAK/UVG/KTG: ' + fmt_chf(A['blocks']['ag']['extra']) if ahv_on else ''}"
+                f"{'<br>AN AHV/ALV/BVG (abzugsfähig): ' + fmt_chf(A['blocks']['an']['total']) if ahv_on else ''}"
+                f"<br><span class='muted'>Nachsteuerlicher Gewinn einbehalten:</span> {fmt_chf(A['retained_after_tax'])}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with colA2:
+            st.markdown(
+                f"<div class='card'><b>Körperschaftssteuer:</b> {fmt_chf(A['corp_tax'])}"
+                f"<br><b>Einkommenssteuer:</b> {fmt_chf(A['income_tax'])}"
+                f"<br><b>Steuern gesamt:</b> {fmt_chf(A['total_taxes'])}"
+                f"<div class='divider'></div>"
+                f"<b>Netto an Inhaber:</b> <span class='accent'>{fmt_chf(A['adjusted_net'])}</span></div>",
+                unsafe_allow_html=True,
+            )
 
-        # Anzeige C
-        st.subheader("🏗️ Szenario C – Thesaurierung (keine Auszahlung)")
-        st.write(f"Körperschaftssteuer: CHF {C['corp_tax']:,.0f}")
-        st.write(f"**Steuern gesamt (heute): CHF {C['total_taxes']:,.0f}**")
-        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {C['retained_after_tax']:,.0f} (Erhöhung Eigenkapital)")
-        if wealth_rate_pm>0:
-            st.write(f"Vermögenssteuer-Impact (≈): CHF {C['wealth_cost']:,.0f}")
-        st.info(
-            f"**Netto an Inhaber (heute):** CHF {C['adjusted_net']:,.0f}  |  "
-            f"**Wertaufbau in der Firma:** CHF {C['retained_after_tax']:,.0f}"
-        )
+        # ----- B: Salary + Dividend -----
+        st.markdown("### 📈 Szenario B – Lohn + Dividende")
+        colB1, colB2 = st.columns([2,1])
+        with colB1:
+            t_partial = f"Teilbesteuerung (Nicht-KER): Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}%"
+            reclass_txt = ""
+            if B["blocks"]["reclass"]>0:
+                reclass_txt = f"<br><span class='muted'>AHV-Umqualifizierung:</span> Basis {fmt_chf(B['blocks']['reclass'])} (AN-AHV {fmt_chf(B['blocks']['ee_reclass'])})"
+            st.markdown(
+                f"<div class='card'>"
+                f"<b>Bruttolohn:</b> {fmt_chf(B['salary'])}"
+                f"<br><b>Dividende gesamt:</b> {fmt_chf(B['dividend'])}"
+                f"<br><span class='muted'>KER steuerfrei genutzt:</span> {fmt_chf(B['blocks']['ker_used'])}"
+                f"<br><span class='muted'>{t_partial}</span>"
+                f"{reclass_txt}"
+                f"<br><span class='muted'>Nachsteuerlicher Gewinn einbehalten:</span> {fmt_chf(B['retained_after_tax'])}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with colB2:
+            st.markdown(
+                f"<div class='card'><b>Körperschaftssteuer:</b> {fmt_chf(B['corp_tax'])}"
+                f"<br><b>Einkommenssteuer:</b> {fmt_chf(B['income_tax'])}"
+                f"<br><b>Steuern gesamt:</b> {fmt_chf(B['total_taxes'])}"
+                f"<div class='divider'></div>"
+                f"<b>Netto an Inhaber:</b> <span class='accent'>{fmt_chf(B['adjusted_net'])}</span></div>",
+                unsafe_allow_html=True,
+            )
 
-        # Vergleich
-        st.markdown("---")
-        st.subheader("🔹 Vergleich (heutiger Nettozufluss)")
+        # ----- C: Retention -----
+        st.markdown("### 🏗️ Szenario C – Thesaurierung (keine Auszahlung)")
+        colC1, colC2 = st.columns([2,1])
+        with colC1:
+            st.markdown(
+                f"<div class='card'>"
+                f"<b>Körperschaftssteuer:</b> {fmt_chf(C['corp_tax'])}"
+                f"<br><span class='muted'>Nachsteuerlicher Gewinn einbehalten:</span> {fmt_chf(C['retained_after_tax'])}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with colC2:
+            st.markdown(
+                f"<div class='card'><b>Steuern gesamt:</b> {fmt_chf(C['total_taxes'])}"
+                f"<div class='divider'></div>"
+                f"<b>Netto an Inhaber (heute):</b> <span class='accent'>{fmt_chf(C['adjusted_net'])}</span></div>",
+                unsafe_allow_html=True,
+            )
+
+        # ----- Comparison -----
+        st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+        st.markdown("### 🔹 Vergleich (heutiger Nettozufluss)")
         c1, c2, c3 = st.columns(3)
-        with c1: st.metric("A: Lohn", f"CHF {A['adjusted_net']:,.0f}")
-        with c2: st.metric("B: Lohn+Dividende", f"CHF {B['adjusted_net']:,.0f}")
-        with c3: st.metric("C: Thesaurierung", f"CHF {C['adjusted_net']:,.0f}")
+        c1.metric("A: Lohn", fmt_chf(A["adjusted_net"]))
+        c2.metric("B: Lohn+Dividende", fmt_chf(B["adjusted_net"]))
+        c3.metric("C: Thesaurierung", fmt_chf(C["adjusted_net"]))
 
-        # Optimizer
+        # ----- Optimizer -----
         if optimizer_on:
-            st.markdown("---")
-            st.subheader("🧠 Optimierer – beste Mischung (unter gewählten Regeln)")
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            st.markdown("### 🧠 Optimierer – beste Mischung (unter gewählten Regeln)")
             best = optimize_mix(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin,
                                 wealth_rate_pm, rule_mode, min_salary, share_pct, ker_amount, total_corp, step=1000.0)
-            st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
-            st.write(f"Körperschaftssteuer: CHF {best['corp_tax']:,.0f}  |  Einkommensteuer: CHF {best['income_tax']:,.0f}")
-            st.write(f"**Steuern gesamt (heute): CHF {best['total_taxes']:,.0f}**")
-            st.write(f"Nachsteuerlich einbehalten: CHF {best['retained_after_tax']:,.0f}")
-            st.success(f"**Max. Netto an Inhaber (heute):** CHF {best['adjusted_net']:,.0f}")
+            colO1, colO2 = st.columns([2,1])
+            with colO1:
+                st.markdown(
+                    f"<div class='card'><b>Optimaler Lohn:</b> {fmt_chf(best['salary'])}"
+                    f"<br><b>Dividende:</b> {fmt_chf(best['dividend'])}"
+                    f"<br><span class='muted'>Nachsteuerlich einbehalten:</span> {fmt_chf(best['retained_after_tax'])}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with colO2:
+                st.markdown(
+                    f"<div class='card'><b>Körperschaftssteuer:</b> {fmt_chf(best['corp_tax'])}"
+                    f"<br><b>Einkommenssteuer:</b> {fmt_chf(best['income_tax'])}"
+                    f"<br><b>Steuern gesamt:</b> {fmt_chf(best['total_taxes'])}"
+                    f"<div class='divider'></div>"
+                    f"<b>Max. Netto (heute):</b> <span class='accent'>{fmt_chf(best['adjusted_net'])}</span></div>",
+                    unsafe_allow_html=True,
+                )
 
-            # ---- Tax savings summary ----
+            # Tax savings vs A/B/C
             saved_vs_A = A["total_taxes"] - best["total_taxes"]
             saved_vs_B = B["total_taxes"] - best["total_taxes"]
             saved_vs_C = C["total_taxes"] - best["total_taxes"]
-            st.markdown("### 💡 Steuer-Ersparnis (heute)")
-            st.info(
-                f"gegenüber **100% Lohn**: **CHF {saved_vs_A:,.0f}**  \n"
-                f"gegenüber **Standard Lohn+Dividende**: **CHF {saved_vs_B:,.0f}**  \n"
-                f"gegenüber **Thesaurierung**: **CHF {saved_vs_C:,.0f}**"
+            st.markdown(
+                f"<div class='card'><b>💡 Steuer-Ersparnis (heute)</b><br>"
+                f"gegenüber <b>100% Lohn</b>: <span class='accent'>{fmt_chf(saved_vs_A)}</span><br>"
+                f"gegenüber <b>Standard Lohn+Dividende</b>: <span class='accent'>{fmt_chf(saved_vs_B)}</span><br>"
+                f"gegenüber <b>Thesaurierung</b>: <span class='accent'>{fmt_chf(saved_vs_C)}</span></div>",
+                unsafe_allow_html=True,
             )
 
-        # Debug
+        # ----- Debug -----
         if debug_mode:
-            st.markdown("---")
-            st.subheader("🔍 Debug-Informationen")
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            st.markdown("#### 🔍 Debug-Informationen")
             st.write(f"Körperschaftssteuer-Satz gesamt: {total_corp:.2%} (Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})")
             st.write(f"Teilbesteuerung aktiv: {'Ja' if qualifies_partial(share_pct) else 'Nein'} "
                      f"| Bund {int((0.70 if qualifies_partial(share_pct) else 1.00)*100)}%, "
                      f"Kanton {int((dividend_inclusion.get(canton,0.70) if qualifies_partial(share_pct) else 1.00)*100)}%")
-            st.write(f"Regelmodus: {rule_mode} | Mindestlohn: CHF {min_salary:,.0f}")
-            if ker_amount>0: st.write(f"KER verfügbar: CHF {ker_amount:,.0f}")
-            if pk_buyin>0:  st.write(f"PK-Einkauf berücksichtigt: CHF {pk_buyin:,.0f}")
+            st.write(f"Regelmodus: {rule_mode} | Mindestlohn: {fmt_chf(min_salary)}")
+            if ker_amount>0: st.write(f"KER verfügbar: {fmt_chf(ker_amount)}")
+            if pk_buyin>0:  st.write(f"PK-Einkauf berücksichtigt: {fmt_chf(pk_buyin)}")
             if wealth_rate_pm>0:
                 st.caption("Vermögenssteuer-Impact ist eine Approximation auf Δ Eigenkapital (heutige Sicht).")
+
 else:
-    st.info("🤖 Wähle oben deine Parameter und klick auf **Berechnen**.")
+    st.info("👉 Wähle oben deine Parameter und klick auf **Berechnen**.")
+    st.caption("Hinweis: Die Resultate sind Modellrechnungen und ersetzen keine individuelle Steuerberatung.")
