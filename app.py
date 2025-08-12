@@ -111,8 +111,8 @@ if not canton_to_communes:
     canton_to_communes = {"Zürich": ["Zürich"], "Bern": ["Bern"]}
 
 # ------------------------- UI ---------------------------------------------------
-st.title("🇨🇭 Vergleich: Lohn vs. Dividende")
-st.caption("Berechnet Nettobezüge für Schweizer Unternehmer – inkl. AHV/ALV/BVG, direkter Steuern, Teilbesteuerung & Realitätschecks.")
+st.title("Vergleich: Lohn vs. Dividende")
+st.caption("Berechnet Nettobezüge für Schweizer Unternehmer – inkl. AHV/ALV/BVG, direkter Steuern, Teilbesteuerung & Annahmen.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -126,7 +126,7 @@ with col2:
     canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()))
     commune  = st.selectbox("Gemeinde", canton_to_communes.get(canton, ["Default"]))
     other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
-    private_deductions = st.number_input("Private Abzüge (z. B. Säule 3a, Berufsauslagen) [CHF]", 0.0, step=5_000.0)
+    private_deductions = st.number_input("Private Abzüge (z.B. Säule 3a, Berufsauslagen) [CHF]", 0.0, step=5_000.0)
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
     st.session_state.debug_mode = debug_mode
 
@@ -141,7 +141,7 @@ with col4:
     uvg_ktg_rate = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1) / 100.0
     church_rate  = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5) / 100.0
 
-optimizer_on = st.checkbox("🔎 Beste Mischung (Lohn + Dividende) automatisch optimieren", value=False)
+optimizer_on = st.checkbox("Beste Mischung (Lohn + Dividende) automatisch optimieren", value=False)
 
 # gewünschte Auszahlung validieren
 if desired_income == 0:
@@ -450,7 +450,7 @@ if profit > 0:
     B = scenario_dividend_only()
 
     # Anzeige Szenario A
-    st.subheader("💼 Szenario A – Lohn (100 %)")
+    st.subheader("Szenario A – Lohn (100 %)")
     st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
     if ahv_subject == "Ja":
         st.write(f"Arbeitgeber AHV/ALV/BVG: CHF {(A['components']['ahv_emp']+A['components']['alv_emp']+A['components']['bvg_emp']):,.0f}")
@@ -463,7 +463,7 @@ if profit > 0:
     st.success(f"**Netto an Inhaber:** CHF {A['net']:,.0f}")
 
     # Anzeige Szenario B
-    st.subheader("📈 Szenario B – Dividende (100 %)")
+    st.subheader("Szenario B – Dividende (100 %)")
     st.write(f"Dividende: **CHF {B['dividend']:,.0f}**")
     st.write(f"Körperschaftssteuer (nach evtl. AG-AHV auf Umqualifizierung): CHF {B['corp_tax']:,.0f}")
     qualifies = qualifies_partial_taxation(share_pct)
@@ -491,7 +491,7 @@ if profit > 0:
     # Optimizer
     if optimizer_on:
         st.markdown("---")
-        st.subheader("🧠 Optimierer – beste Mischung (Lohn + Dividende)")
+        st.subheader("Optimierer – beste Mischung (Lohn + Dividende)")
         best = optimizer_best_mix()
         st.write(
             f"**Optimaler Lohn:** CHF {best['salary']:,.0f} | "
@@ -504,7 +504,7 @@ if profit > 0:
     # Debug
     if debug_mode:
         st.markdown("---")
-        st.subheader("🔍 Debug-Informationen")
+        st.subheader("Debug-Informationen")
         st.write(
             f"**Körperschaftssteuer gesamt:** {total_corp:.2%} "
             f"(Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})"
