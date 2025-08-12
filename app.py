@@ -1,4 +1,5 @@
-# app.py – Lohn vs. Dividende vs. Thesaurierung (TREX + Vontobel-aligned)
+# app.py – Lohn vs. Dividende vs. Thesaurierung
+# Form-based UX + tax savings summary (TREX + Vontobel aligned)
 import json, math, pathlib
 import streamlit as st
 
@@ -67,7 +68,7 @@ AHV_employer   = social_sec.get("AHV_IV_EO_EmployerShare", 0.053)
 AHV_employee   = social_sec.get("AHV_IV_EO_EmployeeShare", 0.053)
 ALV_employer   = social_sec.get("ALV_EmployerShare", 0.011)
 ALV_employee   = social_sec.get("ALV_EmployeeShare", 0.011)
-ALV_ceiling    = social_sec.get("ALV_Ceiling", 148200.0)  # cap
+ALV_ceiling    = social_sec.get("ALV_Ceiling", 148200.0)
 ALV_solidarity = 0.0  # abolished
 
 BVG_rates = {
@@ -95,45 +96,6 @@ for k in list(canton_to_communes.keys()):
 if not canton_to_communes:
     st.error("Keine Steuerdaten gefunden. Fallback aktiviert.")
     canton_to_communes = {"Zürich": ["Zürich"], "Bern": ["Bern"]}
-
-# ------------------------- UI -------------------------------
-st.title("🇨🇭 Bezugsstrategie: Lohn vs. Dividende vs. Thesaurierung")
-st.caption("Regeln nach Praxis (TREX) & Steuerlogik (Vontobel) inkl. BVG, Teilbesteuerung, KER, Kirche & Vermögenssteuer-Impact.")
-
-col1, col2 = st.columns(2)
-with col1:
-    profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
-    desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
-    ahv_on         = st.radio("AHV/ALV/BVG auf Lohn anwenden?", ["Ja", "Nein"]) == "Ja"
-    age_band       = st.selectbox("Altersband (BVG)", ["25-34 (7%)","35-44 (10%)","45-54 (15%)","55-65 (18%)"], index=1)
-with col2:
-    canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()))
-    commune  = st.selectbox("Gemeinde", canton_to_communes.get(canton, ["Default"]))
-    other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
-    church_rate = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5)/100.0
-    debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
-
-st.markdown("### Realitätschecks & Optionen")
-col3, col4 = st.columns(2)
-with col3:
-    rule_mode   = st.radio("Regelmodus", ["Strikt (Dividende nur bei Lohn ≥ Mindestlohn)", "Risikobasiert (AHV-Umqualifizierung bei Lohn < Mindestlohn)"])
-    min_salary  = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
-    share_pct   = st.number_input("Beteiligungsquote [%] (Teilbesteuerung ab 10 %)", 0.0, 100.0, 100.0, step=5.0)
-    ker_amount  = st.number_input("KER verfügbar (steuerfreie Ausschüttung) [CHF]", 0.0, step=10_000.0)
-with col4:
-    fak_rate    = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
-    uvg_rate    = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
-    pk_buyin    = st.number_input("PK-Einkauf (privat) [CHF]", 0.0, step=5_000.0)  # Hinweis: Sperrfristen beachten
-    wealth_rate_pm = st.number_input("Vermögenssteuer-Impact auf Eigenkapitaländerung [‰]", 0.0, 10.0, 0.0, step=0.5)/1000.0
-apply_wealth_to_net = st.checkbox("Vermögenssteuer-Impact vom Netto abziehen (Approximation)", value=False)
-
-optimizer_on = st.checkbox("🧠 Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
-
-# desired payout
-if desired_income == 0:
-    desired_income = None
-elif desired_income > profit:
-    desired_income = profit
 
 # ------------------------- Tax engines ----------------------
 def federal_income_tax(taxable):
@@ -184,8 +146,6 @@ def corp_tax_components(kanton, gemeinde):
     local = cant_base * (km + gm)
     return fed, local, fed + local
 
-fed_corp, local_corp, total_corp = corp_tax_components(canton, commune)
-
 def qualifies_partial(share):
     return (share or 0.0) >= 10.0
 
@@ -194,8 +154,16 @@ def incl_rates(qualifies, kanton):
     inc_cant = dividend_inclusion.get(kanton, 0.70) if qualifies else 1.00
     return inc_fed, inc_cant
 
-# Employer/employee cost blocks
-def employer_costs(salary, age_key, ahv=True, fak=fak_rate, uvg=uvg_rate):
+def split_ker(dividend, ker_available):
+    ker_used = min(ker_available, dividend)
+    nonker   = max(0.0, dividend - ker_used)
+    return ker_used, nonker
+
+def wealth_tax_on_delta(delta, rate_pm):
+    return max(0.0, delta * rate_pm)
+
+# Employer/employee costs
+def employer_costs(salary, age_key, ahv=True, fak=0.015, uvg=0.01):
     if not ahv or salary<=0: return dict(ahv=0.0,alv=0.0,bvg=0.0,extra=0.0,total=0.0)
     ahv_emp = AHV_employer * salary
     alv_emp = ALV_employer * min(salary, ALV_ceiling)
@@ -214,20 +182,10 @@ def employee_deductions(salary, age_key, ahv=True):
         bvg_ee = (BVG_rates[age_key]/2) * bvg_insured_part(salary)
     return dict(ahv=ahv_ee, alv=alv_ee, bvg=bvg_ee, total=ahv_ee+alv_ee+bvg_ee)
 
-# Dividend personal-tax base split for KER
-def split_ker(dividend, ker_available):
-    ker_used = min(ker_available, dividend)
-    nonker   = max(0.0, dividend - ker_used)
-    return ker_used, nonker
-
-# Wealth tax approximation on retained equity delta
-def wealth_tax_on_delta(delta, rate_pm):
-    return max(0.0, delta * rate_pm)
-
 # ------------------------- Scenarios -----------------------
-def scenario_salary_only(profit, desired, kanton, gemeinde, age_key, ahv_on, church, other, pk_buy, wealth_pm):
+def scenario_salary_only(profit, desired, kanton, gemeinde, age_key, ahv_on, church, other, pk_buy, wealth_pm, total_corp):
     salary = profit if desired is None else min(profit, desired)
-    ag = employer_costs(salary, age_key, ahv_on)
+    ag = employer_costs(salary, age_key, ahv_on, fak_rate, uvg_rate)
     an = employee_deductions(salary, age_key, ahv_on)
 
     profit_after_salary = profit - salary - ag["total"]
@@ -236,7 +194,7 @@ def scenario_salary_only(profit, desired, kanton, gemeinde, age_key, ahv_on, chu
     profit_after_salary = max(0.0, profit_after_salary)
 
     corp_tax_amt = profit_after_salary * total_corp
-    retained_after_tax = profit_after_salary - corp_tax_amt  # equity increase in this scenario
+    retained_after_tax = profit_after_salary - corp_tax_amt
 
     taxable = clamp(salary - an["total"] + other - pk_buy)
     fed  = federal_income_tax(taxable)
@@ -247,26 +205,26 @@ def scenario_salary_only(profit, desired, kanton, gemeinde, age_key, ahv_on, chu
     wealth_cost = wealth_tax_on_delta(retained_after_tax, wealth_pm)
     adjusted_net = net_owner - wealth_cost if apply_wealth_to_net else net_owner
 
+    total_taxes = corp_tax_amt + income_tax
     return {
         "salary": salary, "dividend": 0.0,
-        "corp_tax": corp_tax_amt, "income_tax": income_tax,
+        "corp_tax": corp_tax_amt, "income_tax": income_tax, "total_taxes": total_taxes,
         "net": net_owner, "retained_after_tax": retained_after_tax,
         "wealth_cost": wealth_cost, "adjusted_net": adjusted_net,
         "blocks": dict(ag=ag, an=an, fed=fed, cant=cant)
     }
 
 def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church, other, pk_buy, wealth_pm,
-                      rule_mode, min_salary, share_pct, ker_available):
+                      rule_mode, min_salary, share_pct, ker_available, total_corp):
     qualifies = qualifies_partial(share_pct)
     inc_fed, inc_cant = incl_rates(qualifies, kanton)
 
-    # Step 1: decide base salary under rule mode
+    fed_corp, local_corp, _ = corp_tax_components(kanton, gemeinde)  # for display only
+
+    # Step 1: salary logic per rule
     if rule_mode.startswith("Strikt"):
-        # Must pay at least min_salary before any dividend
         salary = min(min_salary, profit if desired is None else min(profit, desired))
-        allow_div_if_salary_ok = True
-        reclass_base = 0.0
-        ag = employer_costs(salary, age_key, ahv_on)
+        ag = employer_costs(salary, age_key, ahv_on, fak_rate, uvg_rate)
         an = employee_deductions(salary, age_key, ahv_on)
 
         profit_after_salary = clamp(profit - salary - ag["total"])
@@ -275,15 +233,14 @@ def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church
 
         desired_left = None if desired is None else clamp(desired - salary)
         gross_div = after_corp if desired_left is None else min(after_corp, desired_left)
-
+        reclass_base = 0.0
         dividend = gross_div if salary >= min_salary else 0.0
         if salary < min_salary and gross_div > 0:
             st.info("Dividende nicht zulässig, da Lohn < Mindestlohn (Strikt-Modus). Ausschüttung = 0.")
     else:
-        # Risikobasiert: salary can be < min; but reclassification applies to shortfall
-        # Start by choosing salary = min(desired, profit) (we let optimizer vary it; here default to min_salary cap)
-        salary = min(min_salary, profit if desired is None else min(profit, desired))  # default: aim for the min
-        ag = employer_costs(salary, age_key, ahv_on)
+        # Risk-based: we default to min_salary (optimizer can vary)
+        salary = min(min_salary, profit if desired is None else min(profit, desired))
+        ag = employer_costs(salary, age_key, ahv_on, fak_rate, uvg_rate)
         an = employee_deductions(salary, age_key, ahv_on)
 
         profit_after_salary = clamp(profit - salary - ag["total"])
@@ -293,87 +250,77 @@ def scenario_dividend(profit, desired, kanton, gemeinde, age_key, ahv_on, church
         dividend_guess = after_corp_pre if desired_left is None else min(after_corp_pre, desired_left)
 
         reclass_base = 0.0
-        # If you manually set salary lower (via optimizer), this block will reclass; with default here, shortfall=0.
         if salary < min_salary and dividend_guess > 0:
             shortfall = min(min_salary - salary, dividend_guess)
             reclass_base = shortfall
-            # Employer AHV on reclass reduces profit pre-tax; after-tax impact with shield:
             ag_reclass = AHV_employer * reclass_base
             after_corp = after_corp_pre - ag_reclass * (1.0 - total_corp)
             dividend = min(after_corp, desired_left) if desired_left is not None else after_corp
         else:
-            dividend = dividend_guess
             after_corp = after_corp_pre
+            dividend = dividend_guess
+        corp_tax_amt = profit_after_salary * total_corp
 
-        corp_tax_amt = profit_after_salary * total_corp  # display
-
-    # Step 2: KER split
+    # Step 2: KER
     ker_used, nonker_div = split_ker(dividend, ker_available)
 
-    # Step 3: personal taxes
-    # salary part
+    # Step 3: personal tax base
     taxable_salary = clamp(salary - an["total"])
-
-    # reclassified part (risk mode only): treated as salary; AN-AHV deductible
     ee_reclass = AHV_employee * reclass_base if reclass_base > 0 else 0.0
     taxable_reclass = clamp(reclass_base - ee_reclass)
 
-    # dividends: KER part tax-free; non-KER part partially taxed
     taxable_fed  = clamp(taxable_salary + taxable_reclass + nonker_div*inc_fed + other - pk_buy)
     taxable_cant = clamp(taxable_salary + taxable_reclass + nonker_div*inc_cant + other - pk_buy)
 
-    fed  = federal_income_tax(taxable_fed)
-    cant = cantonal_income_tax(taxable_cant, kanton, gemeinde) * (1.0 + church)
-    income_tax = fed + cant
+    fed_tax  = federal_income_tax(taxable_fed)
+    cant_tax = cantonal_income_tax(taxable_cant, kanton, gemeinde) * (1.0 + church)
+    income_tax = fed_tax + cant_tax
 
-    # Step 4: wealth tax approximate (retained earnings after tax)
     retained_after_tax = clamp(profit_after_salary - corp_tax_amt - dividend)
     wealth_cost = wealth_tax_on_delta(retained_after_tax, wealth_pm)
 
-    # Step 5: owner net “today”
     net_owner = (salary - an["total"]) + (dividend - (ee_reclass if reclass_base>0 else 0.0)) - income_tax
     adjusted_net = net_owner - wealth_cost if apply_wealth_to_net else net_owner
 
+    total_taxes = corp_tax_amt + income_tax
     return {
         "salary": salary, "dividend": dividend,
-        "corp_tax": corp_tax_amt, "income_tax": income_tax,
+        "corp_tax": corp_tax_amt, "income_tax": income_tax, "total_taxes": total_taxes,
         "net": net_owner, "retained_after_tax": retained_after_tax,
         "wealth_cost": wealth_cost, "adjusted_net": adjusted_net,
-        "blocks": dict(ag=ag, an=an, fed=fed, cant=cant, reclass=reclass_base, ee_reclass=ee_reclass,
-                       inc_fed=inc_fed, inc_cant=inc_cant, ker_used=ker_used, nonker_div=nonker_div)
+        "blocks": dict(ag=ag, an=an, fed=fed_tax, cant=cant_tax, reclass=reclass_base, ee_reclass=ee_reclass,
+                       inc_fed=inc_fed, inc_cant=inc_cant, ker_used=ker_used, nonker_div=nonker_div,
+                       corp_parts=(fed_corp, local_corp))
     }
 
-def scenario_retention(profit, kanton, gemeinde, wealth_pm):
-    # no payout this year (salary=0, div=0); all profit is corporate-taxed and retained
+def scenario_retention(profit, wealth_pm, total_corp):
     corp_tax_amt = profit * total_corp
     retained_after_tax = profit - corp_tax_amt
     wealth_cost = wealth_tax_on_delta(retained_after_tax, wealth_pm)
     adjusted_net = -wealth_cost if apply_wealth_to_net else 0.0
+    total_taxes = corp_tax_amt  # no personal tax today
     return {
         "salary": 0.0, "dividend": 0.0,
-        "corp_tax": corp_tax_amt, "income_tax": 0.0,
+        "corp_tax": corp_tax_amt, "income_tax": 0.0, "total_taxes": total_taxes,
         "net": 0.0, "retained_after_tax": retained_after_tax,
         "wealth_cost": wealth_cost, "adjusted_net": adjusted_net
     }
 
 # ------------------------- Optimizer -----------------------
-def optimize_mix(step=1000.0):
-    """Search salary 0..cap; rule_mode enforced; returns best adjusted_net."""
-    age_key = age_band.split()[0]
+def optimize_mix(profit, desired_income, kanton, gemeinde, age_key, ahv_on, church, other, pk_buyin,
+                 wealth_pm, rule_mode, min_salary, share_pct, ker_amount, total_corp, step=1000.0):
     qualifies = qualifies_partial(share_pct)
-    inc_fed, inc_cant = incl_rates(qualifies, canton)
+    inc_fed, inc_cant = incl_rates(qualifies, kanton)
     salary_cap = profit if desired_income is None else min(profit, desired_income)
 
     best = None
     s = 0.0
     while s <= salary_cap + 1e-6:
-        # Employer/employee costs
-        ag = employer_costs(s, age_key, ahv_on)
+        ag = employer_costs(s, age_key, ahv_on, fak_rate, uvg_rate)
         an = employee_deductions(s, age_key, ahv_on)
         profit_after_salary = clamp(profit - s - ag["total"])
         corp_tax_pre = profit_after_salary * total_corp
         after_corp_pre = profit_after_salary - corp_tax_pre
-
         desired_left = None if desired_income is None else clamp(desired_income - s)
         pre_dividend = after_corp_pre if desired_left is None else min(after_corp_pre, desired_left)
 
@@ -382,7 +329,6 @@ def optimize_mix(step=1000.0):
             dividend = pre_dividend if s >= min_salary else 0.0
             corp_tax_amt = corp_tax_pre
         else:
-            # Risikobasiert: reclass shortfall
             if s < min_salary and pre_dividend > 0:
                 reclass_base = min(min_salary - s, pre_dividend)
                 ag_reclass = AHV_employer * reclass_base
@@ -393,116 +339,176 @@ def optimize_mix(step=1000.0):
                 after_corp = after_corp_pre
             corp_tax_amt = profit_after_salary * total_corp
 
-        # KER split
         ker_used, nonker_div = split_ker(dividend, ker_amount)
-
-        # Personal tax base
         taxable_salary = clamp(s - an["total"])
         ee_reclass = AHV_employee * reclass_base if reclass_base>0 else 0.0
         taxable_reclass = clamp(reclass_base - ee_reclass)
 
-        taxable_fed  = clamp(taxable_salary + taxable_reclass + nonker_div*inc_fed + other_inc - pk_buyin)
-        taxable_cant = clamp(taxable_salary + taxable_reclass + nonker_div*inc_cant + other_inc - pk_buyin)
+        taxable_fed  = clamp(taxable_salary + taxable_reclass + nonker_div*inc_fed + other - pk_buyin)
+        taxable_cant = clamp(taxable_salary + taxable_reclass + nonker_div*inc_cant + other - pk_buyin)
+
         fed_tax  = federal_income_tax(taxable_fed)
-        cant_tax = cantonal_income_tax(taxable_cant, canton, commune) * (1.0 + church_rate)
+        cant_tax = cantonal_income_tax(taxable_cant, kanton, gemeinde) * (1.0 + church)
         income_tax = fed_tax + cant_tax
 
         retained_after_tax = clamp(profit_after_salary - corp_tax_amt - dividend)
-        wealth_cost = wealth_tax_on_delta(retained_after_tax, wealth_rate_pm)
+        wealth_cost = wealth_tax_on_delta(retained_after_tax, wealth_pm)
         net_owner = (s - an["total"]) + (dividend - (ee_reclass if reclass_base>0 else 0.0)) - income_tax
         adjusted_net = net_owner - wealth_cost if apply_wealth_to_net else net_owner
 
+        total_taxes = corp_tax_amt + income_tax
         res = {"salary": s, "dividend": dividend, "net": net_owner, "adjusted_net": adjusted_net,
-               "income_tax": income_tax, "corp_tax": corp_tax_amt, "retained_after_tax": retained_after_tax}
+               "income_tax": income_tax, "corp_tax": corp_tax_amt, "retained_after_tax": retained_after_tax,
+               "total_taxes": total_taxes}
         if (best is None) or (adjusted_net > best["adjusted_net"]):
             best = res
         s += step
     return best
 
-# ------------------------- Run & Render --------------------
-if profit > 0:
+# ------------------------- UI (FORM) -----------------------
+st.title("🇨🇭 Bezugsstrategie: Lohn vs. Dividende vs. Thesaurierung")
+st.caption("Form ausfüllen → **Berechnen**. In den Ergebnissen siehst du Nettos, Steuern – und die **Steuerersparnis** der optimalen Mischung.")
+
+with st.form("bezugs_form"):
+    col1, col2 = st.columns(2)
+    with col1:
+        profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0, key="p")
+        desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0, key="d")
+        ahv_on_choice  = st.radio("AHV/ALV/BVG auf Lohn anwenden?", ["Ja", "Nein"], key="ahv")
+        age_band       = st.selectbox("Altersband (BVG)", ["25-34 (7%)","35-44 (10%)","45-54 (15%)","55-65 (18%)"], index=1, key="age")
+    with col2:
+        canton   = st.selectbox("Kanton", sorted(canton_to_communes.keys()), key="kanton")
+        commune  = st.selectbox("Gemeinde", canton_to_communes.get(st.session_state.kanton, ["Default"]), key="gemeinde")
+        other_inc= st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0, key="other")
+        church_rate = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5, key="church")/100.0
+
+    st.markdown("#### Realitätschecks & Optionen")
+    col3, col4 = st.columns(2)
+    with col3:
+        rule_mode   = st.radio("Regelmodus", ["Strikt (Dividende nur bei Lohn ≥ Mindestlohn)", "Risikobasiert (AHV-Umqualifizierung bei Lohn < Mindestlohn)"], key="rule")
+        min_salary  = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0, key="minsal")
+        share_pct   = st.number_input("Beteiligungsquote [%] (Teilbesteuerung ab 10 %)", 0.0, 100.0, 100.0, step=5.0, key="share")
+        ker_amount  = st.number_input("KER verfügbar (steuerfreie Ausschüttung) [CHF]", 0.0, step=10_000.0, key="ker")
+    with col4:
+        fak_rate    = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1, key="fak")/100.0
+        uvg_rate    = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1, key="uvg")/100.0
+        pk_buyin    = st.number_input("PK-Einkauf (privat) [CHF]", 0.0, step=5_000.0, key="pk")
+        wealth_rate_pm = st.number_input("Vermögenssteuer-Impact auf Eigenkapitaländerung [‰]", 0.0, 10.0, 0.0, step=0.5, key="wealth")/1000.0
+
+    apply_wealth_to_net = st.checkbox("Vermögenssteuer-Impact vom Netto abziehen (Approximation)", value=False, key="applywealth")
+    optimizer_on = st.checkbox("🧠 Optimierer – beste Mischung (Lohn + Dividende) finden", value=True, key="opt")
+    debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False, key="dbg")
+
+    submitted = st.form_submit_button("🔢 Berechnen")
+
+# ------------------------- Run after submit ----------------
+if submitted:
+    ahv_on = (st.session_state.ahv == "Ja")
+    if desired_income == 0:
+        desired_income = None
+    elif desired_income > profit:
+        desired_income = profit
+
+    fed_corp, local_corp, total_corp = corp_tax_components(canton, commune)
     age_key = age_band.split()[0]
 
-    # Szenario A – Lohn
-    A = scenario_salary_only(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin, wealth_rate_pm)
+    if profit <= 0:
+        st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
+    else:
+        # Szenarien berechnen
+        A = scenario_salary_only(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin, wealth_rate_pm, total_corp)
+        B = scenario_dividend(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin, wealth_rate_pm,
+                              rule_mode, min_salary, share_pct, ker_amount, total_corp)
+        C = scenario_retention(profit, wealth_rate_pm, total_corp)
 
-    # Szenario B – Dividende (mit Regelmodus/KER)
-    B = scenario_dividend(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin, wealth_rate_pm,
-                          rule_mode, min_salary, share_pct, ker_amount)
-
-    # Szenario C – Thesaurierung (keine Auszahlung)
-    C = scenario_retention(profit, canton, commune, wealth_rate_pm)
-
-    # ----- Display A -----
-    st.subheader("💼 Szenario A – 100% Lohn")
-    st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
-    if ahv_on:
-        st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
-        st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
-        st.write(f"AN AHV/ALV/BVG (abzugsfähig): CHF {A['blocks']['an']['total']:,.0f}")
-    st.write(f"Körperschaftssteuer Restgewinn: CHF {A['corp_tax']:,.0f}")
-    st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {A['income_tax']:,.0f}")
-    st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {A['retained_after_tax']:,.0f}")
-    if wealth_rate_pm>0:
-        st.write(f"Vermögenssteuer-Impact (≈): CHF {A['wealth_cost']:,.0f}")
-    st.success(f"**Netto an Inhaber (heute):** CHF {A['adjusted_net']:,.0f}")
-
-    # ----- Display B -----
-    st.subheader("📈 Szenario B – Lohn + Dividende")
-    st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
-    st.write(f"Körperschaftssteuer (nach Lohn): CHF {B['corp_tax']:,.0f}")
-    st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {B['income_tax']:,.0f}")
-    st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {B['retained_after_tax']:,.0f}")
-    if B["blocks"]["reclass"]>0:
-        st.info(f"AHV-Umqualifizierung (Risikomodus): Basis CHF {B['blocks']['reclass']:,.0f} "
-                f"(AN-AHV: CHF {B['blocks']['ee_reclass']:,.0f})")
-    st.caption(f"Teilbesteuerung (auf Nicht-KER): Bund {int(B['blocks']['inc_fed']*100)}%, "
-               f"Kanton {int(B['blocks']['inc_cant']*100)}% | KER steuerfrei genutzt: CHF {B['blocks']['ker_used']:,.0f}")
-    if wealth_rate_pm>0:
-        st.write(f"Vermögenssteuer-Impact (≈): CHF {B['wealth_cost']:,.0f}")
-    st.success(f"**Netto an Inhaber (heute):** CHF {B['adjusted_net']:,.0f}")
-
-    # ----- Display C -----
-    st.subheader("🏗️ Szenario C – Thesaurierung (keine Auszahlung)")
-    st.write(f"Körperschaftssteuer: CHF {C['corp_tax']:,.0f}")
-    st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {C['retained_after_tax']:,.0f} (Erhöhung Eigenkapital)")
-    if wealth_rate_pm>0:
-        st.write(f"Vermögenssteuer-Impact (≈): CHF {C['wealth_cost']:,.0f}")
-    st.info(f"**Netto an Inhaber (heute):** CHF {C['adjusted_net']:,.0f}  |  "
-            f"**Wertaufbau in der Firma:** CHF {C['retained_after_tax']:,.0f}")
-
-    # ----- Vergleich -----
-    st.markdown("---")
-    st.subheader("🔹 Vergleich (heutiger Nettozufluss)")
-    c1, c2, c3 = st.columns(3)
-    with c1: st.metric("A: Lohn", f"CHF {A['adjusted_net']:,.0f}")
-    with c2: st.metric("B: Lohn+Dividende", f"CHF {B['adjusted_net']:,.0f}")
-    with c3: st.metric("C: Thesaurierung", f"CHF {C['adjusted_net']:,.0f}")
-
-    # ----- Optimizer -----
-    if optimizer_on:
-        st.markdown("---")
-        st.subheader("🧠 Optimierer – beste Mischung (unter gewählten Regeln)")
-        best = optimize_mix(step=1000.0)
-        st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
-        st.write(f"Einkommenssteuer gesamt: CHF {best['income_tax']:,.0f}")
-        st.write(f"Körperschaftssteuer: CHF {best['corp_tax']:,.0f}")
-        st.write(f"Nachsteuerlich einbehalten: CHF {best['retained_after_tax']:,.0f}")
-        st.success(f"**Max. Netto an Inhaber (heute):** CHF {best['adjusted_net']:,.0f}")
-
-    # ----- Debug -----
-    if debug_mode:
-        st.markdown("---")
-        st.subheader("🔍 Debug-Informationen")
-        st.write(f"Körperschaftssteuer-Satz gesamt: {(total_corp):.2%} (Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})")
-        st.write(f"Teilbesteuerung aktiv: {'Ja' if qualifies_partial(share_pct) else 'Nein'} "
-                 f"| Bund {int((0.70 if qualifies_partial(share_pct) else 1.00)*100)}%, "
-                 f"Kanton {int((dividend_inclusion.get(canton,0.70) if qualifies_partial(share_pct) else 1.00)*100)}%")
-        st.write(f"Regelmodus: {rule_mode} | Mindestlohn: CHF {min_salary:,.0f}")
-        if ker_amount>0: st.write(f"KER verfügbar: CHF {ker_amount:,.0f}")
-        if pk_buyin>0:  st.write(f"PK-Einkauf berücksichtigt: CHF {pk_buyin:,.0f}")
+        # Anzeige A
+        st.subheader("💼 Szenario A – 100% Lohn")
+        st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
+        if ahv_on:
+            st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
+            st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
+            st.write(f"AN AHV/ALV/BVG (abzugsfähig): CHF {A['blocks']['an']['total']:,.0f}")
+        st.write(f"Körperschaftssteuer Restgewinn: CHF {A['corp_tax']:,.0f}")
+        st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {A['income_tax']:,.0f}")
+        st.write(f"**Steuern gesamt (heute): CHF {A['total_taxes']:,.0f}**")
+        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {A['retained_after_tax']:,.0f}")
         if wealth_rate_pm>0:
-            st.caption("Vermögenssteuer-Impact ist eine Approximation auf Δ Eigenkapital (heutige Sicht).")
+            st.write(f"Vermögenssteuer-Impact (≈): CHF {A['wealth_cost']:,.0f}")
+        st.success(f"**Netto an Inhaber (heute):** CHF {A['adjusted_net']:,.0f}")
 
+        # Anzeige B
+        st.subheader("📈 Szenario B – Lohn + Dividende")
+        st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
+        st.write(f"Körperschaftssteuer (nach Lohn): CHF {B['corp_tax']:,.0f}")
+        st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {B['income_tax']:,.0f}")
+        st.write(f"**Steuern gesamt (heute): CHF {B['total_taxes']:,.0f}**")
+        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {B['retained_after_tax']:,.0f}")
+        if B["blocks"]["reclass"]>0:
+            st.info(f"AHV-Umqualifizierung (Risikomodus): Basis CHF {B['blocks']['reclass']:,.0f} "
+                    f"(AN-AHV: CHF {B['blocks']['ee_reclass']:,.0f})")
+        st.caption(
+            f"Teilbesteuerung (auf Nicht-KER): Bund {int(B['blocks']['inc_fed']*100)}%, "
+            f"Kanton {int(B['blocks']['inc_cant']*100)}% | KER steuerfrei genutzt: CHF {B['blocks']['ker_used']:,.0f}"
+        )
+        if wealth_rate_pm>0:
+            st.write(f"Vermögenssteuer-Impact (≈): CHF {B['wealth_cost']:,.0f}")
+        st.success(f"**Netto an Inhaber (heute):** CHF {B['adjusted_net']:,.0f}")
+
+        # Anzeige C
+        st.subheader("🏗️ Szenario C – Thesaurierung (keine Auszahlung)")
+        st.write(f"Körperschaftssteuer: CHF {C['corp_tax']:,.0f}")
+        st.write(f"**Steuern gesamt (heute): CHF {C['total_taxes']:,.0f}**")
+        st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {C['retained_after_tax']:,.0f} (Erhöhung Eigenkapital)")
+        if wealth_rate_pm>0:
+            st.write(f"Vermögenssteuer-Impact (≈): CHF {C['wealth_cost']:,.0f}")
+        st.info(
+            f"**Netto an Inhaber (heute):** CHF {C['adjusted_net']:,.0f}  |  "
+            f"**Wertaufbau in der Firma:** CHF {C['retained_after_tax']:,.0f}"
+        )
+
+        # Vergleich
+        st.markdown("---")
+        st.subheader("🔹 Vergleich (heutiger Nettozufluss)")
+        c1, c2, c3 = st.columns(3)
+        with c1: st.metric("A: Lohn", f"CHF {A['adjusted_net']:,.0f}")
+        with c2: st.metric("B: Lohn+Dividende", f"CHF {B['adjusted_net']:,.0f}")
+        with c3: st.metric("C: Thesaurierung", f"CHF {C['adjusted_net']:,.0f}")
+
+        # Optimizer
+        if optimizer_on:
+            st.markdown("---")
+            st.subheader("🧠 Optimierer – beste Mischung (unter gewählten Regeln)")
+            best = optimize_mix(profit, desired_income, canton, commune, age_key, ahv_on, church_rate, other_inc, pk_buyin,
+                                wealth_rate_pm, rule_mode, min_salary, share_pct, ker_amount, total_corp, step=1000.0)
+            st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
+            st.write(f"Körperschaftssteuer: CHF {best['corp_tax']:,.0f}  |  Einkommensteuer: CHF {best['income_tax']:,.0f}")
+            st.write(f"**Steuern gesamt (heute): CHF {best['total_taxes']:,.0f}**")
+            st.write(f"Nachsteuerlich einbehalten: CHF {best['retained_after_tax']:,.0f}")
+            st.success(f"**Max. Netto an Inhaber (heute):** CHF {best['adjusted_net']:,.0f}")
+
+            # ---- Tax savings summary ----
+            saved_vs_A = A["total_taxes"] - best["total_taxes"]
+            saved_vs_B = B["total_taxes"] - best["total_taxes"]
+            saved_vs_C = C["total_taxes"] - best["total_taxes"]
+            st.markdown("### 💡 Steuer-Ersparnis (heute)")
+            st.info(
+                f"gegenüber **100% Lohn**: **CHF {saved_vs_A:,.0f}**  \n"
+                f"gegenüber **Standard Lohn+Dividende**: **CHF {saved_vs_B:,.0f}**  \n"
+                f"gegenüber **Thesaurierung**: **CHF {saved_vs_C:,.0f}**"
+            )
+
+        # Debug
+        if debug_mode:
+            st.markdown("---")
+            st.subheader("🔍 Debug-Informationen")
+            st.write(f"Körperschaftssteuer-Satz gesamt: {total_corp:.2%} (Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})")
+            st.write(f"Teilbesteuerung aktiv: {'Ja' if qualifies_partial(share_pct) else 'Nein'} "
+                     f"| Bund {int((0.70 if qualifies_partial(share_pct) else 1.00)*100)}%, "
+                     f"Kanton {int((dividend_inclusion.get(canton,0.70) if qualifies_partial(share_pct) else 1.00)*100)}%")
+            st.write(f"Regelmodus: {rule_mode} | Mindestlohn: CHF {min_salary:,.0f}")
+            if ker_amount>0: st.write(f"KER verfügbar: CHF {ker_amount:,.0f}")
+            if pk_buyin>0:  st.write(f"PK-Einkauf berücksichtigt: CHF {pk_buyin:,.0f}")
+            if wealth_rate_pm>0:
+                st.caption("Vermögenssteuer-Impact ist eine Approximation auf Δ Eigenkapital (heutige Sicht).")
 else:
-    st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
+    st.info("🤖 Wähle oben deine Parameter und klick auf **Berechnen**.")
