@@ -130,7 +130,7 @@ with col2:
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
     st.session_state.debug_mode = debug_mode
 
-st.markdown("### Realitätschecks & Annahmen")
+st.markdown("### Annahmen")
 col3, col4 = st.columns(2)
 with col3:
     min_salary = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
