@@ -97,8 +97,8 @@ if not canton_to_communes:
     canton_to_communes = {"Zürich": ["Zürich"], "Bern": ["Bern"]}
 
 # ------------------------- UI -------------------------------
-st.title("🇨🇭 Bezugsstrategie: Lohn vs. Dividende")
-st.caption("Regeln nach Praxis (TREX) & Steuerlogik (Vontobel) inkl. BVG, Teilbesteuerung, KER, Kirche & Vermögenssteuer-Impact.")
+st.title("Lohn vs. Dividende")
+st.caption("Regeln nach Praxis & Steuerlogik inkl. BVG, Teilbesteuerung, KER, Kirche & Vermögenssteuer-Impact.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -113,7 +113,7 @@ with col2:
     church_rate = st.number_input("Kirchensteuer-Zuschlag auf kant./gemeindl. Steuer [%]", 0.0, 30.0, 0.0, step=0.5)/100.0
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
 
-st.markdown("### Realitätschecks & Optionen")
+st.markdown("### Annahmen")
 col3, col4 = st.columns(2)
 with col3:
     rule_mode   = st.radio("Regelmodus", ["Strikt (Dividende nur bei Lohn ≥ Mindestlohn)", "Risikobasiert (AHV-Umqualifizierung bei Lohn < Mindestlohn)"])
@@ -127,7 +127,7 @@ with col4:
     wealth_rate_pm = st.number_input("Vermögenssteuer-Impact auf Eigenkapitaländerung [‰]", 0.0, 10.0, 0.0, step=0.5)/1000.0
 apply_wealth_to_net = st.checkbox("Vermögenssteuer-Impact vom Netto abziehen (Approximation)", value=False)
 
-optimizer_on = st.checkbox("🧠 Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
+optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
 
 # desired payout
 if desired_income == 0:
@@ -414,7 +414,7 @@ if profit > 0:
                           rule_mode, min_salary, share_pct, ker_amount)
 
     # ----- Display A -----
-    st.subheader("💼 Szenario A – 100% Lohn")
+    st.subheader("Szenario A – 100% Lohn")
     st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
     if ahv_on:
         st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
@@ -428,7 +428,7 @@ if profit > 0:
     st.success(f"**Netto an Inhaber (heute):** CHF {A['adjusted_net']:,.0f}")
 
     # ----- Display B -----
-    st.subheader("📈 Szenario B – Lohn + Dividende")
+    st.subheader("Szenario B – Lohn + Dividende")
     st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
     st.write(f"Körperschaftssteuer (nach Lohn): CHF {B['corp_tax']:,.0f}")
     st.write(f"Einkommenssteuer (Bund+Kanton{(' + Kirche' if church_rate>0 else '')}): CHF {B['income_tax']:,.0f}")
@@ -444,7 +444,7 @@ if profit > 0:
 
     # ----- Vergleich -----
     st.markdown("---")
-    st.subheader("🔹 Vergleich (heutiger Nettozufluss)")
+    st.subheader("Vergleich (heutiger Nettozufluss)")
     c1, c2 = st.columns(2)
     with c1: st.metric("A: Lohn", f"CHF {A['adjusted_net']:,.0f}")
     with c2: st.metric("B: Lohn+Dividende", f"CHF {B['adjusted_net']:,.0f}")
@@ -452,7 +452,7 @@ if profit > 0:
     # ----- Optimizer -----
     if optimizer_on:
         st.markdown("---")
-        st.subheader("🧠 Optimierer – beste Mischung (unter gewählten Regeln)")
+        st.subheader("Optimierer – beste Mischung (unter gewählten Regeln)")
         best = optimize_mix(step=1000.0)
         st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
         st.write(f"Einkommenssteuer gesamt: CHF {best['income_tax']:,.0f}")
@@ -463,7 +463,7 @@ if profit > 0:
     # ----- Debug -----
     if debug_mode:
         st.markdown("---")
-        st.subheader("🔍 Debug-Informationen")
+        st.subheader("Debug-Informationen")
         st.write(f"Körperschaftssteuer-Satz gesamt: {(total_corp):.2%} (Bund {fed_corp:.2%}, Kanton+Gemeinde {local_corp:.2%})")
         st.write(f"Teilbesteuerung aktiv: {'Ja' if qualifies_partial(share_pct) else 'Nein'} "
                  f"| Bund {int((0.70 if qualifies_partial(share_pct) else 1.00)*100)}%, "
