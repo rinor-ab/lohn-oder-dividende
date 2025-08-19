@@ -1,4 +1,4 @@
-# app.py — Lohn vs. Dividende (devbrains 2025; simplified deductions UI; robust parsing)
+# app.py — Lohn vs. Dividende (devbrains 2025; simplified deductions UI; robust parsing + bugfix)
 import json, math, pathlib
 import streamlit as st
 from functools import lru_cache
@@ -12,10 +12,10 @@ YEAR       = "2025"
 # ================= Constants ===================
 CHURCH_AVG_RATE   = 0.12          # Ø Kirchensteuer-Zuschlag (12%)
 AHV_ON_DEFAULT    = True          # AHV/ALV/BVG standardmäßig an
-DIV_PARTIAL_FED   = 0.70          # vereinfachte Teilbesteuerung (≥10% Beteiligung)
+DIV_PARTIAL_FED   = 0.70          # Teilbesteuerung Annahme (≥10% Beteiligung)
 DIV_PARTIAL_CANT  = 0.70
 
-# Social security (kept from your earlier config)
+# Social security (kept)
 AHV_employer   = 0.053
 AHV_employee   = 0.053
 ALV_employer   = 0.011
@@ -43,28 +43,15 @@ def _load_json(p: pathlib.Path):
 
 def _norm_text(val) -> str:
     """Return a lowercased string from any JSON shape (str/dict/list/number)."""
-    if val is None:
-        return ""
-    if isinstance(val, str):
-        return val.lower()
-    if isinstance(val, (int, float)):
-        return str(val).lower()
+    if val is None: return ""
+    if isinstance(val, str): return val.lower()
+    if isinstance(val, (int, float)): return str(val).lower()
     if isinstance(val, dict):
-        # prefer language/name-like keys if present
-        for k in ("de", "en", "fr", "it", "name", "label", "title"):
-            if k in val and isinstance(val[k], str):
-                return val[k].lower()
-        parts = []
-        for v in val.values():
-            s = _norm_text(v)
-            if s: parts.append(s)
-        return " ".join(parts)
+        for k in ("de","en","fr","it","name","label","title"):
+            if isinstance(val.get(k), str): return val[k].lower()
+        return " ".join(_norm_text(v) for v in val.values() if _norm_text(v))
     if isinstance(val, list):
-        parts = []
-        for v in val:
-            s = _norm_text(v)
-            if s: parts.append(s)
-        return " ".join(parts)
+        return " ".join(_norm_text(v) for v in val if _norm_text(v))
     return str(val).lower()
 
 # ================= Load devbrains data =================
@@ -147,7 +134,7 @@ def parse_flags(fmt: str):
     return {f.strip() for f in flags if f.strip()}
 
 def compute_deductions_total(base_amount: float, items_with_scope, ui_values: dict) -> float:
-    """Generic computation with MINIMUM/MAXIMUM and %; clamps to base."""
+    """Generic computation with MINIMUM/MAXIMUM/%; clamp to base."""
     base = clamp(base_amount)
     total = 0.0
     for scope, item in (items_with_scope or []):
@@ -171,12 +158,8 @@ def compute_deductions_total(base_amount: float, items_with_scope, ui_values: di
     return min(total, base)
 
 def _match_item(items, *keywords):
-    """
-    Find first (scope,item) whose name/id contains all keyword groups.
-    Each element of keywords can be a string or list/tuple of synonyms.
-    """
-    if not items:
-        return None
+    """Find first (scope,item) whose name/id contains all keyword groups."""
+    if not items: return None
     groups = []
     for k in keywords:
         if isinstance(k, (list, tuple)):
@@ -191,15 +174,14 @@ def _match_item(items, *keywords):
         ok = True
         for group in groups:
             if not any(needle in haystack for needle in group):
-                ok = False
-                break
+                ok = False; break
         if ok:
             return (scope, it)
     return None
 
 def pick_curated_items(bund_groups, kant_groups):
     B = flatten_deduction_items(bund_groups)   # scope "BUND"
-    K = flatten_deduction_items(kant_groups)   # scope usually "KANTON"/"GEMEINDE"
+    K = flatten_deduction_items(kant_groups)   # scope usually Kanton/Gemeinde
 
     def pick(*kws):
         hit = _match_item(K, *kws)
@@ -215,7 +197,7 @@ def pick_curated_items(bund_groups, kant_groups):
         "uebrige":   pick("übrige", "abzug"),
         "schuld":    pick("schuldzinsen"),
         "unterhalt": pick(["unterhalt","unterhalts"], "liegenschaft"),
-        "uebrige_w": pick("übrige", "abzug"),   # may resolve same as 'uebrige'
+        "uebrige_w": pick("übrige", "abzug"),   # may resolve to same as 'uebrige'
     }
     return curated, B, K
 
@@ -329,7 +311,7 @@ with st.expander("ANNAHMEN", expanded=False):
         in_unterh = st.number_input("Unterhaltskosten für Liegenschaften", min_value=0.0, step=100.0, value=0.0, key="ded_unterhalt")
         in_uebrige_w = st.number_input("Übrige Abzüge (weitere)", min_value=0.0, step=100.0, value=0.0, key="ded_uebrige_w")
 
-    # stash inputs for use during scenario computations
+    # Stash inputs for scenario calculations
     st.session_state["_ded_ui_values"] = dict(
         vers=in_vers, s3a=in_s3a, verp=in_verp, fahr=in_fahr,
         beruf_mode=mode_beruf, beruf_eff=in_beruf_eff,
@@ -346,18 +328,24 @@ elif desired_income > profit:
 
 # ---------- Curated deductions application ----------
 def apply_curated_deductions(base_fed, base_cant):
-    curated, B_flat, K_flat = st.session_state.get("_curated_sets", ({}, [], []))
+    """Build ui map and split curated items into BUND vs Kanton/Gemeinde safely."""
+    curated, _B, _K = st.session_state.get("_curated_sets", ({}, [], []))
     ui = st.session_state.get("_ded_ui_values", {})
 
-    # chosen items (tuple or None)
-    chosen = {k: curated.get(k) for k in ["vers","s3a","verp","fahr","beruf","beruf_neb","uebrige","schuld","unterhalt","uebrige_w"]}
+    keys = ["vers","s3a","verp","fahr","beruf","beruf_neb","uebrige","schuld","unterhalt","uebrige_w"]
+    chosen = {k: curated.get(k) for k in keys}
 
-    # Build 'scope:id' → amount map
     ui_map = {}
-    for key, tup in chosen.items():
-        if not tup: continue
+    bund_items = []
+    kant_items = []
+
+    for key in keys:
+        tup = chosen.get(key)
+        if not tup:
+            continue
         scope, item = tup
         iid = str(item.get("id",""))
+
         if key == "beruf":
             amt = 0.0 if ui.get("beruf_mode")=="pauschal" else float(ui.get("beruf_eff", 0.0) or 0.0)
         else:
@@ -367,11 +355,13 @@ def apply_curated_deductions(base_fed, base_cant):
                 "schuld":"schuld","unterhalt":"unterhalt","uebrige_w":"uebrige_w"
             }.get(key, key)
             amt = float(ui.get(fieldname, 0.0) or 0.0)
+
         ui_map[f"{scope}:{iid}"] = amt
 
-    # separate by scope
-    bund_items = [(s,i) for (k,(s,i)) in chosen.items() if k and tup and (tup:=chosen.get(k)) and (tup[0] or "").upper()=="BUND"]
-    kant_items = [(s,i) for (k,(s,i)) in chosen.items() if k and tup and (tup:=chosen.get(k)) and (tup[0] or "").upper()!="BUND"]
+        if (scope or "").upper() == "BUND":
+            bund_items.append((scope, item))
+        else:
+            kant_items.append((scope, item))
 
     ded_fed  = compute_deductions_total(clamp(base_fed),  bund_items, ui_map) if bund_items else 0.0
     ded_cant = compute_deductions_total(clamp(base_cant), kant_items, ui_map) if kant_items else 0.0
