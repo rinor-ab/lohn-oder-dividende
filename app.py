@@ -1,21 +1,21 @@
-# app.py — Lohn vs. Dividende (devbrains 2025; simplified deductions UI; Annahmen inside expander)
+# app.py — Lohn vs. Dividende (devbrains 2025; simplified deductions UI; robust parsing)
 import json, math, pathlib
 import streamlit as st
 from functools import lru_cache
 from collections import defaultdict
 
 # ================= Paths / Year =================
-BASE_DIR = pathlib.Path(__file__).parent
+BASE_DIR   = pathlib.Path(__file__).parent
 PARSED_DIR = BASE_DIR / "data" / "parsed"
-YEAR = "2025"
+YEAR       = "2025"
 
 # ================= Constants ===================
-CHURCH_AVG_RATE = 0.12          # Ø Kirchensteuer-Zuschlag (12%)
-AHV_ON_DEFAULT = True           # AHV/ALV/BVG standardmäßig an
-DIV_PARTIAL_FED  = 0.70         # vereinfachte Teilbesteuerung (≥10% Beteiligung)
-DIV_PARTIAL_CANT = 0.70
+CHURCH_AVG_RATE   = 0.12          # Ø Kirchensteuer-Zuschlag (12%)
+AHV_ON_DEFAULT    = True          # AHV/ALV/BVG standardmäßig an
+DIV_PARTIAL_FED   = 0.70          # vereinfachte Teilbesteuerung (≥10% Beteiligung)
+DIV_PARTIAL_CANT  = 0.70
 
-# Social security (kept from your config)
+# Social security (kept from your earlier config)
 AHV_employer   = 0.053
 AHV_employee   = 0.053
 ALV_employer   = 0.011
@@ -40,6 +40,32 @@ def age_to_band(age:int)->str:
 def _load_json(p: pathlib.Path):
     with p.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+def _norm_text(val) -> str:
+    """Return a lowercased string from any JSON shape (str/dict/list/number)."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.lower()
+    if isinstance(val, (int, float)):
+        return str(val).lower()
+    if isinstance(val, dict):
+        # prefer language/name-like keys if present
+        for k in ("de", "en", "fr", "it", "name", "label", "title"):
+            if k in val and isinstance(val[k], str):
+                return val[k].lower()
+        parts = []
+        for v in val.values():
+            s = _norm_text(v)
+            if s: parts.append(s)
+        return " ".join(parts)
+    if isinstance(val, list):
+        parts = []
+        for v in val:
+            s = _norm_text(v)
+            if s: parts.append(s)
+        return " ".join(parts)
+    return str(val).lower()
 
 # ================= Load devbrains data =================
 def load_locations():
@@ -121,70 +147,95 @@ def parse_flags(fmt: str):
     return {f.strip() for f in flags if f.strip()}
 
 def compute_deductions_total(base_amount: float, items_with_scope, ui_values: dict) -> float:
-    base = clamp(base_amount); total = 0.0
-    for scope, item in items_with_scope:
-        fmt = parse_flags(item.get("format", ""))
-        minimum = float(item.get("minimum", 0) or 0.0)
-        maximum = float(item.get("maximum", 0) or 0.0)
-        percent = float(item.get("percent", 0) or 0.0)/100.0
+    """Generic computation with MINIMUM/MAXIMUM and %; clamps to base."""
+    base = clamp(base_amount)
+    total = 0.0
+    for scope, item in (items_with_scope or []):
+        fmt      = parse_flags(item.get("format", ""))
+        minimum  = float(item.get("minimum", 0) or 0.0)
+        maximum  = float(item.get("maximum", 0) or 0.0)
+        percent  = float(item.get("percent", 0) or 0.0)/100.0
         default_amt = float(item.get("amount", 0) or 0.0)
-        key = f"{scope}:{item.get('id','')}"
+        iid = str(item.get("id", ""))  # ensure string key
+        key = f"{scope}:{iid}"
+
         user_amt = float(ui_values.get(key, 0.0) or 0.0)
-        raw = (user_amt if user_amt>0 else default_amt) + base * percent
+        raw = (user_amt if user_amt > 0 else default_amt) + base * percent
+
         val = raw
         if "MINIMUM" in fmt: val = max(val, minimum)
-        if "MAXIMUM" in fmt and maximum>0: val = min(val, maximum)
+        if "MAXIMUM" in fmt and maximum > 0: val = min(val, maximum)
+
         val = clamp(min(val, base))
         total += val
     return min(total, base)
 
-# ---- curated matching (by keywords in item['name']['de'] or id) ----
 def _match_item(items, *keywords):
-    kw = [k.lower() for k in keywords]
-    best = None
+    """
+    Find first (scope,item) whose name/id contains all keyword groups.
+    Each element of keywords can be a string or list/tuple of synonyms.
+    """
+    if not items:
+        return None
+    groups = []
+    for k in keywords:
+        if isinstance(k, (list, tuple)):
+            groups.append([_norm_text(x) for x in k])
+        else:
+            groups.append([_norm_text(k)])
+
     for scope, it in items:
-        name_de = ((it.get("name") or {}).get("de","") or "").lower()
-        iid = (it.get("id","") or "").lower()
-        hit = all(any(k in name_de or k in iid for k in (pair if isinstance(pair, (list,tuple)) else [pair])) for pair in kw)
-        if hit:
-            best = (scope, it); break
-    return best  # (scope,item) or None
+        name_txt = _norm_text(it.get("name"))
+        id_txt   = _norm_text(it.get("id"))
+        haystack = f"{name_txt} {id_txt}"
+        ok = True
+        for group in groups:
+            if not any(needle in haystack for needle in group):
+                ok = False
+                break
+        if ok:
+            return (scope, it)
+    return None
 
 def pick_curated_items(bund_groups, kant_groups):
-    # flatten once
-    B = flatten_deduction_items(bund_groups)
-    K = flatten_deduction_items(kant_groups)
-    # try canton first, then bund (for UI we don’t care; for calc we’ll split)
+    B = flatten_deduction_items(bund_groups)   # scope "BUND"
+    K = flatten_deduction_items(kant_groups)   # scope usually "KANTON"/"GEMEINDE"
+
     def pick(*kws):
-        return _match_item(K, *kws) or _match_item(B, *kws)
+        hit = _match_item(K, *kws)
+        return hit if hit else _match_item(B, *kws)
 
     curated = {
-        "vers": pick("versicherungs", ["sparkapital", "spar"]),              # Versicherungsprämien & Zinsen Sparkapitalien
-        "s3a":  pick(["säule 3a","saeule 3a","3a"]),
-        "verp": pick("verpflegung"),
-        "fahr": pick("fahrkosten"),
-        "beruf": pick("berufsauslagen"),
-        "beruf_neb": pick("berufsauslagen", "neben"),                        # Nebenerwerb
-        "uebrige": pick("übrige", "abzug"),                                  # Übrige Abzüge
-        "schuld": pick("schuldzinsen"),
+        "vers":      pick("versicherungs", ["sparkapital", "spar"]),
+        "s3a":       pick(["säule 3a","saeule 3a","3a"]),
+        "verp":      pick("verpflegung"),
+        "fahr":      pick("fahrkosten"),
+        "beruf":     pick("berufsauslagen"),
+        "beruf_neb": pick("berufsauslagen", "neben"),
+        "uebrige":   pick("übrige", "abzug"),
+        "schuld":    pick("schuldzinsen"),
         "unterhalt": pick(["unterhalt","unterhalts"], "liegenschaft"),
-        "uebrige_w": pick("übrige", "abzug"),                                # second 'Übrige' (weitere)
+        "uebrige_w": pick("übrige", "abzug"),   # may resolve same as 'uebrige'
     }
     return curated, B, K
 
 # ================= Personal tax wrappers =================
 def income_components_with_bases(taxable_fed: float, taxable_cant: float, canton_id: int, bfs_id: int):
     t_fed = clamp(taxable_fed); t_cant = clamp(taxable_cant)
+
     fed_tarifs = load_tarifs_federal_if_any()
-    fed_table = _find_table(fed_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    fed_tax = eval_tariff(fed_table, t_fed, 1) if fed_table else 0.0
+    fed_table  = _find_table(fed_tarifs, "EINKOMMENSSTEUER", "ALLE")
+    fed_tax    = eval_tariff(fed_table, t_fed, 1) if fed_table else 0.0
+
     cant_tarifs = load_tarifs(canton_id)
-    cant_table = _find_table(cant_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    base_cant = eval_tariff(cant_table, t_cant, 1) if cant_table else 0.0
+    cant_table  = _find_table(cant_tarifs, "EINKOMMENSSTEUER", "ALLE")
+    base_cant   = eval_tariff(cant_table, t_cant, 1) if cant_table else 0.0
+
     fac = factors_for_bfs(canton_id, bfs_id)
     mult = (fac["IncomeRateCanton"] + fac["IncomeRateCity"]) / 100.0
     cant_city = base_cant * mult
     cant_city_church = cant_city * (1.0 + CHURCH_AVG_RATE)
+
     return fed_tax, cant_city_church, (fed_tax + cant_city_church)
 
 def corporate_tax_rate(canton_id: int, bfs_id: int) -> float:
@@ -245,7 +296,7 @@ with col2:
 
 optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
 
-# --------- ANNAHMEN (moved fully inside the expander) ----------
+# --------- ANNAHMEN (all controls & deductions inside expander) ----------
 with st.expander("ANNAHMEN", expanded=False):
     st.subheader("Annahmen")
     colA, colB = st.columns(2)
@@ -262,7 +313,6 @@ with st.expander("ANNAHMEN", expanded=False):
     bund_groups, kant_groups = load_deductions(canton_id)
     curated, B_items, K_items = pick_curated_items(bund_groups, kant_groups)
 
-    # UI like screenshot
     colL, colR = st.columns(2)
     with colL:
         in_vers = st.number_input("Versicherungsprämien und Zinsen von Sparkapitalien", min_value=0.0, step=100.0, value=0.0, key="ded_vers")
@@ -279,7 +329,7 @@ with st.expander("ANNAHMEN", expanded=False):
         in_unterh = st.number_input("Unterhaltskosten für Liegenschaften", min_value=0.0, step=100.0, value=0.0, key="ded_unterhalt")
         in_uebrige_w = st.number_input("Übrige Abzüge (weitere)", min_value=0.0, step=100.0, value=0.0, key="ded_uebrige_w")
 
-    # make these available outside the expander scope
+    # stash inputs for use during scenario computations
     st.session_state["_ded_ui_values"] = dict(
         vers=in_vers, s3a=in_s3a, verp=in_verp, fahr=in_fahr,
         beruf_mode=mode_beruf, beruf_eff=in_beruf_eff,
@@ -294,37 +344,21 @@ if desired_income == 0:
 elif desired_income > profit:
     desired_income = profit
 
-# ---------- helpers to apply curated deductions ----------
-def _items_for_scope(curated_map, flat_items, wanted_keys):
-    """Return list[(scope,item)] for the curated keys that exist in given flattened list."""
-    out = []
-    for k in wanted_keys:
-        tup = curated_map.get(k)
-        if tup and tup in flat_items:
-            out.append(tup)
-    return out
-
+# ---------- Curated deductions application ----------
 def apply_curated_deductions(base_fed, base_cant):
-    """Build ui_values keyed by 'SCOPE:id' to drive compute_deductions_total()."""
     curated, B_flat, K_flat = st.session_state.get("_curated_sets", ({}, [], []))
     ui = st.session_state.get("_ded_ui_values", {})
 
-    # Build lists of items per layer
-    # We select items from whichever scope they actually belong to (Bund vs Kanton):
-    # We’ll compute each layer separately using only items whose 'scope' matches.
-    all_keys = ["vers","s3a","verp","fahr","beruf","beruf_neb","uebrige","schuld","unterhalt","uebrige_w"]
+    # chosen items (tuple or None)
+    chosen = {k: curated.get(k) for k in ["vers","s3a","verp","fahr","beruf","beruf_neb","uebrige","schuld","unterhalt","uebrige_w"]}
 
-    # Gather chosen items (they carry their own scope string)
-    chosen = {k: curated.get(k) for k in all_keys}
-
-    # Build ui-values translated into the internal 'scope:id' keys
+    # Build 'scope:id' → amount map
     ui_map = {}
     for key, tup in chosen.items():
         if not tup: continue
         scope, item = tup
-        iid = item.get("id","")
+        iid = str(item.get("id",""))
         if key == "beruf":
-            # pauschal -> user_amt = 0 (use default in JSON); effektiv -> user_amt entered
             amt = 0.0 if ui.get("beruf_mode")=="pauschal" else float(ui.get("beruf_eff", 0.0) or 0.0)
         else:
             fieldname = {
@@ -335,16 +369,14 @@ def apply_curated_deductions(base_fed, base_cant):
             amt = float(ui.get(fieldname, 0.0) or 0.0)
         ui_map[f"{scope}:{iid}"] = amt
 
-    # Split items for each layer
-    # Note: compute_deductions_total itself checks MIN/MAX/percent and clamps to base.
-    bund_items = [(s,i) for (k,(s,i)) in chosen.items() if k and (s or "").upper()=="BUND" and i]
-    kant_items = [(s,i) for (k,(s,i)) in chosen.items() if k and (s or "").upper()!="BUND" and i]
+    # separate by scope
+    bund_items = [(s,i) for (k,(s,i)) in chosen.items() if k and tup and (tup:=chosen.get(k)) and (tup[0] or "").upper()=="BUND"]
+    kant_items = [(s,i) for (k,(s,i)) in chosen.items() if k and tup and (tup:=chosen.get(k)) and (tup[0] or "").upper()!="BUND"]
 
     ded_fed  = compute_deductions_total(clamp(base_fed),  bund_items, ui_map) if bund_items else 0.0
     ded_cant = compute_deductions_total(clamp(base_cant), kant_items, ui_map) if kant_items else 0.0
     return ded_fed, ded_cant
 
-# =================== Core engines ============================
 def income_components_with_applied_deductions(base_fed, base_cant, canton_id, bfs_id):
     ded_fed, ded_cant = apply_curated_deductions(base_fed, base_cant)
     taxable_fed  = clamp(base_fed  - ded_fed)
@@ -359,7 +391,8 @@ def scenario_salary_only(profit, desired, canton_id, bfs_id, age_key, ahv_on, ot
     an = employee_deductions(salary, age_key, ahv_on)
 
     rest = profit - salary - ag["total"]
-    if rest < 0: st.warning("Bruttolohn inkl. Arbeitgeberabgaben > Gewinn – Restgewinn wird auf 0 gesetzt.")
+    if rest < 0:
+        st.warning("Bruttolohn inkl. Arbeitgeberabgaben > Gewinn – Restgewinn wird auf 0 gesetzt.")
     rest = max(0.0, rest)
 
     corp_rate = corporate_tax_rate(canton_id, bfs_id)
