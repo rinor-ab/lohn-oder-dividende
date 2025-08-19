@@ -1,4 +1,4 @@
-# app.py — Lohn vs. Dividende (devbrains 2025 + DEDUCTIONS; Ø church; strict; BVG via age)
+# app.py — Lohn vs. Dividende (devbrains 2025; simplified deductions UI; Annahmen inside expander)
 import json, math, pathlib
 import streamlit as st
 from functools import lru_cache
@@ -7,12 +7,12 @@ from collections import defaultdict
 # ================= Paths / Year =================
 BASE_DIR = pathlib.Path(__file__).parent
 PARSED_DIR = BASE_DIR / "data" / "parsed"
-YEAR = "2025"  # adapt later if you add a year selector
+YEAR = "2025"
 
 # ================= Constants ===================
 CHURCH_AVG_RATE = 0.12          # Ø Kirchensteuer-Zuschlag (12%)
 AHV_ON_DEFAULT = True           # AHV/ALV/BVG standardmäßig an
-DIV_PARTIAL_FED = 0.70          # vereinfachte Teilbesteuerung (ab 10% Beteiligung)
+DIV_PARTIAL_FED  = 0.70         # vereinfachte Teilbesteuerung (≥10% Beteiligung)
 DIV_PARTIAL_CANT = 0.70
 
 # Social security (kept from your config)
@@ -56,17 +56,10 @@ def load_tarifs_federal_if_any():
     return _load_json(p) if p.exists() else []
 
 def load_deductions(canton_id: int):
-    """
-    Returns tuple (bund_groups, kanton_groups)
-    bund_groups: from deductions/0.json (if exists)
-    kanton_groups: from deductions/{CantonID}.json (if exists)
-    Each is a list of groups; a group = {'type','target','items':[...]}.
-    """
     bund_path = PARSED_DIR / YEAR / "deductions" / "0.json"
     kant_path = PARSED_DIR / YEAR / "deductions" / f"{canton_id}.json"
     bund = _load_json(bund_path) if bund_path.exists() else []
     kant = _load_json(kant_path) if kant_path.exists() else []
-    # Keep only income-tax groups (EINKOMMENSSTEUER)
     bund = [g for g in bund if g.get("type")=="EINKOMMENSSTEUER"]
     kant = [g for g in kant if g.get("type")=="EINKOMMENSSTEUER"]
     return bund, kant
@@ -80,15 +73,13 @@ def _find_table(tarifs, tax_type: str, group: str = "ALLE"):
     return None
 
 def _eval_step_table(table_rows, amount: float) -> float:
-    rem = clamp(amount)
-    tax = 0.0
+    rem = clamp(amount); tax = 0.0
     for row in table_rows:
         pct = float(row.get("percent", 0.0)) / 100.0
         width = float(row.get("amount", 0.0))
         if rem <= 0: break
         use = rem if width<=0 else min(rem, width)
-        tax += use * pct
-        rem -= use
+        tax += use * pct; rem -= use
     return tax
 
 def eval_tariff(tariff_obj, amount: float, force_split_factor:int = 1) -> float:
@@ -96,15 +87,11 @@ def eval_tariff(tariff_obj, amount: float, force_split_factor:int = 1) -> float:
     table_type = (tariff_obj.get("tableType") or "").upper()
     split = 1 if force_split_factor==1 else max(1, force_split_factor)
     base = clamp(amount / split)
-
     rows = tariff_obj.get("table") or []
     if table_type == "FLATTAX":
         pct = float(rows[0].get("percent", 0.0))/100.0 if rows else 0.0
         return base * pct * split
-
-    # default: step table
-    tax = _eval_step_table(rows, base)
-    return tax * split
+    return _eval_step_table(rows, base) * split
 
 # ================= Factors lookup =====================
 def factors_for_bfs(canton_id: int, bfs_id: int):
@@ -122,7 +109,6 @@ def factors_for_bfs(canton_id: int, bfs_id: int):
 
 # ================= Deductions engine ==================
 def flatten_deduction_items(groups):
-    """Return a list of (target, item) from deduction groups; each item has id/min/max/format/amount/percent/name{de,...}."""
     out = []
     for g in groups:
         tgt = g.get("target","")
@@ -135,74 +121,76 @@ def parse_flags(fmt: str):
     return {f.strip() for f in flags if f.strip()}
 
 def compute_deductions_total(base_amount: float, items_with_scope, ui_values: dict) -> float:
-    """
-    Generic computation:
-      deduction = (user_amount or item.amount) + base_amount * (item.percent/100)
-      then apply MINIMUM / MAXIMUM caps if specified.
-    Clamped to [0, base_amount].
-    """
-    base = clamp(base_amount)
-    total = 0.0
+    base = clamp(base_amount); total = 0.0
     for scope, item in items_with_scope:
         fmt = parse_flags(item.get("format", ""))
         minimum = float(item.get("minimum", 0) or 0.0)
         maximum = float(item.get("maximum", 0) or 0.0)
         percent = float(item.get("percent", 0) or 0.0)/100.0
         default_amt = float(item.get("amount", 0) or 0.0)
-
-        # user override per item id (same id can appear in both layers; scope key separates UI fields)
         key = f"{scope}:{item.get('id','')}"
         user_amt = float(ui_values.get(key, 0.0) or 0.0)
-
-        raw = user_amt if user_amt>0 else default_amt
-        raw += base * percent
-
-        # apply flags
+        raw = (user_amt if user_amt>0 else default_amt) + base * percent
         val = raw
-        if "MINIMUM" in fmt:
-            val = max(val, minimum)
-        if "MAXIMUM" in fmt and maximum>0:
-            val = min(val, maximum)
-
-        val = clamp(min(val, base))  # deduction cannot exceed base
+        if "MINIMUM" in fmt: val = max(val, minimum)
+        if "MAXIMUM" in fmt and maximum>0: val = min(val, maximum)
+        val = clamp(min(val, base))
         total += val
     return min(total, base)
 
+# ---- curated matching (by keywords in item['name']['de'] or id) ----
+def _match_item(items, *keywords):
+    kw = [k.lower() for k in keywords]
+    best = None
+    for scope, it in items:
+        name_de = ((it.get("name") or {}).get("de","") or "").lower()
+        iid = (it.get("id","") or "").lower()
+        hit = all(any(k in name_de or k in iid for k in (pair if isinstance(pair, (list,tuple)) else [pair])) for pair in kw)
+        if hit:
+            best = (scope, it); break
+    return best  # (scope,item) or None
+
+def pick_curated_items(bund_groups, kant_groups):
+    # flatten once
+    B = flatten_deduction_items(bund_groups)
+    K = flatten_deduction_items(kant_groups)
+    # try canton first, then bund (for UI we don’t care; for calc we’ll split)
+    def pick(*kws):
+        return _match_item(K, *kws) or _match_item(B, *kws)
+
+    curated = {
+        "vers": pick("versicherungs", ["sparkapital", "spar"]),              # Versicherungsprämien & Zinsen Sparkapitalien
+        "s3a":  pick(["säule 3a","saeule 3a","3a"]),
+        "verp": pick("verpflegung"),
+        "fahr": pick("fahrkosten"),
+        "beruf": pick("berufsauslagen"),
+        "beruf_neb": pick("berufsauslagen", "neben"),                        # Nebenerwerb
+        "uebrige": pick("übrige", "abzug"),                                  # Übrige Abzüge
+        "schuld": pick("schuldzinsen"),
+        "unterhalt": pick(["unterhalt","unterhalts"], "liegenschaft"),
+        "uebrige_w": pick("übrige", "abzug"),                                # second 'Übrige' (weitere)
+    }
+    return curated, B, K
+
 # ================= Personal tax wrappers =================
 def income_components_with_bases(taxable_fed: float, taxable_cant: float, canton_id: int, bfs_id: int):
-    """
-    Returns (fed_tax, cant_commune_church_tax, total)
-    Fed: tarifs/0.json (if present). Cant: tarifs/{CantonID}.json with factors * (1 + church).
-    """
-    t_fed = clamp(taxable_fed)
-    t_cant = clamp(taxable_cant)
-
-    # Federal
+    t_fed = clamp(taxable_fed); t_cant = clamp(taxable_cant)
     fed_tarifs = load_tarifs_federal_if_any()
     fed_table = _find_table(fed_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    fed_tax = eval_tariff(fed_table, t_fed, force_split_factor=1) if fed_table else 0.0
-
-    # Cantonal + municipal + church Ø
+    fed_tax = eval_tariff(fed_table, t_fed, 1) if fed_table else 0.0
     cant_tarifs = load_tarifs(canton_id)
     cant_table = _find_table(cant_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    base_cant = eval_tariff(cant_table, t_cant, force_split_factor=1) if cant_table else 0.0
-
+    base_cant = eval_tariff(cant_table, t_cant, 1) if cant_table else 0.0
     fac = factors_for_bfs(canton_id, bfs_id)
     mult = (fac["IncomeRateCanton"] + fac["IncomeRateCity"]) / 100.0
     cant_city = base_cant * mult
     cant_city_church = cant_city * (1.0 + CHURCH_AVG_RATE)
-
     return fed_tax, cant_city_church, (fed_tax + cant_city_church)
 
 def corporate_tax_rate(canton_id: int, bfs_id: int) -> float:
-    """
-    Corporate tax effective RATE:
-      rate = FLATTAX% * (ProfitTaxRateCanton + ProfitTaxRateCity)/100
-    """
     tarifs = load_tarifs(canton_id)
     corp = _find_table(tarifs, "GEWINNSTEUER")
-    if not corp:
-        return 0.10
+    if not corp: return 0.10
     rows = corp.get("table") or []
     base_pct = float(rows[0].get("percent", 0.0))/100.0 if rows else 0.0
     fac = factors_for_bfs(canton_id, bfs_id)
@@ -241,7 +229,7 @@ for k in list(by_canton.keys()):
 
 # ================= Streamlit UI =========================
 st.title("Lohn vs. Dividende")
-st.caption("Devbrains 2025 (locations + factors + tarifs + deductions). Ø Kirchensteuer; KER/Vermögenssteuer nicht berücksichtigt.")
+st.caption("Devbrains 2025: locations + factors + tarifs + deductions. Ø Kirchensteuer; KER/Vermögenssteuer nicht berücksichtigt.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -255,17 +243,50 @@ with col2:
     other_inc = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
     debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
 
-st.markdown("### Annahmen")
-col3, col4 = st.columns(2)
-with col3:
-    min_salary  = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
-    share_pct   = st.number_input("Beteiligungsquote [%] (Teilbesteuerung ab 10 %)", 0.0, 100.0, 100.0, step=5.0)
-with col4:
-    fak_rate    = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
-    uvg_rate    = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
-    pk_buyin    = st.number_input("PK-Einkauf (privat) [CHF]", 0.0, step=1.0)
-
 optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
+
+# --------- ANNAHMEN (moved fully inside the expander) ----------
+with st.expander("ANNAHMEN", expanded=False):
+    st.subheader("Annahmen")
+    colA, colB = st.columns(2)
+    with colA:
+        min_salary  = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0, key="min_salary")
+        share_pct   = st.number_input("Beteiligungsquote [%] (Teilbesteuerung ab 10 %)", 0.0, 100.0, 100.0, step=5.0, key="share_pct")
+    with colB:
+        fak_rate    = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1, key="fak")/100.0
+        uvg_rate    = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1, key="uvg")/100.0
+        pk_buyin    = st.number_input("PK-Einkauf (privat) [CHF]", 0.0, step=1.0, key="pkbuy")
+
+    st.markdown("---")
+    st.markdown("### Abzüge")
+    bund_groups, kant_groups = load_deductions(canton_id)
+    curated, B_items, K_items = pick_curated_items(bund_groups, kant_groups)
+
+    # UI like screenshot
+    colL, colR = st.columns(2)
+    with colL:
+        in_vers = st.number_input("Versicherungsprämien und Zinsen von Sparkapitalien", min_value=0.0, step=100.0, value=0.0, key="ded_vers")
+        in_s3a  = st.number_input("Beiträge an Säule 3a", min_value=0.0, step=100.0, value=0.0, key="ded_s3a")
+        in_verp = st.number_input("Verpflegungskosten", min_value=0.0, step=50.0,  value=0.0, key="ded_verp")
+        in_fahr = st.number_input("Fahrkosten", min_value=0.0, step=100.0, value=0.0, key="ded_fahr")
+        mode_beruf = st.radio("Berufsauslagen", ["pauschal", "effektiv"], horizontal=True, key="ded_beruf_mode")
+        in_beruf_eff = st.number_input("Berufsauslagen (effektiv)", min_value=0.0, step=100.0, value=0.0, key="ded_beruf_eff", disabled=(mode_beruf=="pauschal"))
+    with colR:
+        in_beruf_neb = st.number_input("Berufsauslagen Nebenerwerb", min_value=0.0, step=100.0, value=0.0, key="ded_beruf_neb")
+        in_uebrige   = st.number_input("Übrige Abzüge", min_value=0.0, step=100.0, value=0.0, key="ded_uebrige")
+        st.markdown("#### Weitere Abzüge")
+        in_schuld = st.number_input("Schuldzinsen", min_value=0.0, step=100.0, value=0.0, key="ded_schuld")
+        in_unterh = st.number_input("Unterhaltskosten für Liegenschaften", min_value=0.0, step=100.0, value=0.0, key="ded_unterhalt")
+        in_uebrige_w = st.number_input("Übrige Abzüge (weitere)", min_value=0.0, step=100.0, value=0.0, key="ded_uebrige_w")
+
+    # make these available outside the expander scope
+    st.session_state["_ded_ui_values"] = dict(
+        vers=in_vers, s3a=in_s3a, verp=in_verp, fahr=in_fahr,
+        beruf_mode=mode_beruf, beruf_eff=in_beruf_eff,
+        beruf_neb=in_beruf_neb, uebrige=in_uebrige,
+        schuld=in_schuld, unterhalt=in_unterh, uebrige_w=in_uebrige_w
+    )
+    st.session_state["_curated_sets"] = (curated, B_items, K_items)
 
 # Normalize desired payout
 if desired_income == 0:
@@ -273,56 +294,63 @@ if desired_income == 0:
 elif desired_income > profit:
     desired_income = profit
 
-# =================== ANNAHMEN (collapsible) ===================
-# Dynamic DEDUCTIONS UI (optional) + footnotes
-bund_groups, kant_groups = load_deductions(canton_id)
-bund_items = flatten_deduction_items(bund_groups)
-kant_items = flatten_deduction_items(kant_groups)
+# ---------- helpers to apply curated deductions ----------
+def _items_for_scope(curated_map, flat_items, wanted_keys):
+    """Return list[(scope,item)] for the curated keys that exist in given flattened list."""
+    out = []
+    for k in wanted_keys:
+        tup = curated_map.get(k)
+        if tup and tup in flat_items:
+            out.append(tup)
+    return out
 
-with st.expander("ANNAHMEN", expanded=False):
-    st.markdown(
-        f"- **Kirchensteuer:** Ø-Zuschlag von **{int(CHURCH_AVG_RATE*100)}%** auf die kant./gemeindl. Steuer.\n"
-        f"- **AHV/ALV/BVG:** Standardmäßig **angewendet** (AG- & AN-Anteile berechnet).\n"
-        f"- **Regelmodus:** **Strikt** – Dividenden erst zulässig, wenn der Lohn ≥ Mindestlohn ist.\n"
-        f"- **BVG-Altersband:** Automatische Zuordnung anhand des Alters.\n"
-        f"- **PK-Einkauf:** Reduziert das steuerbare Einkommen (Sperrfristen beachten).\n"
-        f"- **Daten:** `locations.json` → BFS/CantonID; `factors/{{CantonID}}.json` → Multiplikatoren; "
-        f"`tarifs/{{CantonID}}.json` → Tariftabellen; `deductions/{{CantonID}}.json`/`deductions/0.json` → Abzüge.\n"
-        f"- **Nicht berücksichtigt:** KER, Vermögenssteuer-Impact."
-    )
-    st.markdown("---")
-    use_deds = st.checkbox("Steuerabzüge anwenden (optional)", value=True,
-                            help="Erlaubt die Eingabe von Beträgen für einzelne Abzugspositionen. "
-                                 "Prozentsätze, Minimal-/Maximalgrenzen werden automatisch berücksichtigt.")
-    ded_inputs = {}
-    if use_deds:
-        st.markdown("**Abzüge – Bund (tarifs/0.json, deductions/0.json)**")
-        for scope, it in bund_items:
-            name = (it.get("name") or {}).get("de", it.get("id",""))
-            minv = it.get("minimum",0); maxv=it.get("maximum",0); pct=it.get("percent",0)
-            label = f"{name} — min {minv} / max {maxv} / {pct}%"
-            key = f"ded_BUND_{it.get('id','')}"
-            ded_inputs[f"BUND:{it.get('id','')}"] = st.number_input(label, min_value=0.0, step=100.0, value=0.0, key=key)
+def apply_curated_deductions(base_fed, base_cant):
+    """Build ui_values keyed by 'SCOPE:id' to drive compute_deductions_total()."""
+    curated, B_flat, K_flat = st.session_state.get("_curated_sets", ({}, [], []))
+    ui = st.session_state.get("_ded_ui_values", {})
 
-        st.markdown("**Abzüge – Kanton/Gemeinde (deductions/{CantonID}.json)**")
-        for scope, it in kant_items:
-            name = (it.get("name") or {}).get("de", it.get("id",""))
-            minv = it.get("minimum",0); maxv=it.get("maximum",0); pct=it.get("percent",0)
-            label = f"{name} — min {minv} / max {maxv} / {pct}%"
-            key = f"ded_KANTON_{it.get('id','')}"
-            ded_inputs[f"{scope}:{it.get('id','')}"] = st.number_input(label, min_value=0.0, step=100.0, value=0.0, key=key)
+    # Build lists of items per layer
+    # We select items from whichever scope they actually belong to (Bund vs Kanton):
+    # We’ll compute each layer separately using only items whose 'scope' matches.
+    all_keys = ["vers","s3a","verp","fahr","beruf","beruf_neb","uebrige","schuld","unterhalt","uebrige_w"]
+
+    # Gather chosen items (they carry their own scope string)
+    chosen = {k: curated.get(k) for k in all_keys}
+
+    # Build ui-values translated into the internal 'scope:id' keys
+    ui_map = {}
+    for key, tup in chosen.items():
+        if not tup: continue
+        scope, item = tup
+        iid = item.get("id","")
+        if key == "beruf":
+            # pauschal -> user_amt = 0 (use default in JSON); effektiv -> user_amt entered
+            amt = 0.0 if ui.get("beruf_mode")=="pauschal" else float(ui.get("beruf_eff", 0.0) or 0.0)
+        else:
+            fieldname = {
+                "vers":"vers","s3a":"s3a","verp":"verp","fahr":"fahr",
+                "beruf_neb":"beruf_neb","uebrige":"uebrige",
+                "schuld":"schuld","unterhalt":"unterhalt","uebrige_w":"uebrige_w"
+            }.get(key, key)
+            amt = float(ui.get(fieldname, 0.0) or 0.0)
+        ui_map[f"{scope}:{iid}"] = amt
+
+    # Split items for each layer
+    # Note: compute_deductions_total itself checks MIN/MAX/percent and clamps to base.
+    bund_items = [(s,i) for (k,(s,i)) in chosen.items() if k and (s or "").upper()=="BUND" and i]
+    kant_items = [(s,i) for (k,(s,i)) in chosen.items() if k and (s or "").upper()!="BUND" and i]
+
+    ded_fed  = compute_deductions_total(clamp(base_fed),  bund_items, ui_map) if bund_items else 0.0
+    ded_cant = compute_deductions_total(clamp(base_cant), kant_items, ui_map) if kant_items else 0.0
+    return ded_fed, ded_cant
 
 # =================== Core engines ============================
-def cantonal_income_tax_devbrains(taxable, canton_id, bfs_id):
-    tarifs = load_tarifs(canton_id)
-    table = _find_table(tarifs, "EINKOMMENSSTEUER", "ALLE")
-    base = eval_tariff(table, clamp(taxable), 1) if table else 0.0
-    fac = factors_for_bfs(canton_id, bfs_id)
-    mult = (fac["IncomeRateCanton"] + fac["IncomeRateCity"])/100.0
-    return base * mult * (1.0 + CHURCH_AVG_RATE)
-
-def corp_tax_rate_devbrains(canton_id, bfs_id):
-    return corporate_tax_rate(canton_id, bfs_id)
+def income_components_with_applied_deductions(base_fed, base_cant, canton_id, bfs_id):
+    ded_fed, ded_cant = apply_curated_deductions(base_fed, base_cant)
+    taxable_fed  = clamp(base_fed  - ded_fed)
+    taxable_cant = clamp(base_cant - ded_cant)
+    fed_tax, cant_tax, total_tax = income_components_with_bases(taxable_fed, taxable_cant, canton_id, bfs_id)
+    return ded_fed, ded_cant, fed_tax, cant_tax, total_tax
 
 # =================== Scenarios ==============================
 def scenario_salary_only(profit, desired, canton_id, bfs_id, age_key, ahv_on, other, pk_buy):
@@ -331,55 +359,32 @@ def scenario_salary_only(profit, desired, canton_id, bfs_id, age_key, ahv_on, ot
     an = employee_deductions(salary, age_key, ahv_on)
 
     rest = profit - salary - ag["total"]
-    if rest < 0:
-        st.warning("Bruttolohn inkl. Arbeitgeberabgaben > Gewinn – Restgewinn wird auf 0 gesetzt.")
+    if rest < 0: st.warning("Bruttolohn inkl. Arbeitgeberabgaben > Gewinn – Restgewinn wird auf 0 gesetzt.")
     rest = max(0.0, rest)
 
-    corp_rate = corp_tax_rate_devbrains(canton_id, bfs_id)
+    corp_rate = corporate_tax_rate(canton_id, bfs_id)
     corp_tax_amt = rest * corp_rate
 
-    # Base pre-deduction
     base = clamp(salary - an["total"] + other - pk_buy)
-
-    # Apply deductions (separately for federal and canton)
-    if bund_items or kant_items:
-        if 'use_deds' in locals() or True:
-            fed_items = bund_items
-            cant_items_scoped = kant_items
-            fed_ui = {k.replace("BUND:","BUND:"):v for k,v in (ded_inputs or {}).items()}
-            cant_ui = {k:v for k,v in (ded_inputs or {}).items() if not k.startswith("BUND:")}
-            fed_ded = compute_deductions_total(base, fed_items, fed_ui) if (use_deds and fed_items) else compute_deductions_total(base, fed_items, {})
-            cant_ded= compute_deductions_total(base, cant_items_scoped, cant_ui) if (use_deds and cant_items_scoped) else compute_deductions_total(base, cant_items_scoped, {})
-        else:
-            fed_ded=cant_ded=0.0
-    else:
-        fed_ded=cant_ded=0.0
-
-    taxable_fed  = clamp(base - fed_ded)
-    taxable_cant = clamp(base - cant_ded)
-
-    fed_tax, cant_tax, total_tax = income_components_with_bases(taxable_fed, taxable_cant, canton_id, bfs_id)
+    ded_fed, ded_cant, fed_tax, cant_tax, total_tax = income_components_with_applied_deductions(base, base, canton_id, bfs_id)
 
     net_owner = salary - an["total"] - total_tax
-
     return {
         "salary": salary, "dividend": 0.0,
         "corp_tax": corp_tax_amt, "income_tax": total_tax,
         "net": net_owner, "adjusted_net": net_owner,
         "retained_after_tax": max(0.0, rest - corp_tax_amt),
-        "blocks": dict(ag=ag, an=an, fed=fed_tax, cant=cant_tax,
-                       ded_fed=fed_ded, ded_cant=cant_ded)
+        "blocks": dict(ag=ag, an=an, fed=fed_tax, cant=cant_tax, ded_fed=ded_fed, ded_cant=ded_cant)
     }
 
 def scenario_dividend(profit, desired, canton_id, bfs_id, age_key, ahv_on, other, pk_buy,
                       min_salary, share_pct):
-    # Strict: salary ≥ min_salary before dividends
     salary = min(min_salary, profit if desired is None else min(profit, desired))
     ag = employer_costs(salary, age_key, ahv_on, fak=fak_rate, uvg=uvg_rate)
     an = employee_deductions(salary, age_key, ahv_on)
 
     rest = clamp(profit - salary - ag["total"])
-    corp_rate = corp_tax_rate_devbrains(canton_id, bfs_id)
+    corp_rate = corporate_tax_rate(canton_id, bfs_id)
     corp_tax_amt = rest * corp_rate
     after_corp = rest - corp_tax_amt
 
@@ -391,49 +396,32 @@ def scenario_dividend(profit, desired, canton_id, bfs_id, age_key, ahv_on, other
         st.info("Dividende nicht zulässig, da Lohn < Mindestlohn (Strikt-Modus). Ausschüttung = 0.")
 
     qualifies = qualifies_partial(share_pct)
-    inc_fed = DIV_PARTIAL_FED if qualifies else 1.0
+    inc_fed  = DIV_PARTIAL_FED  if qualifies else 1.0
     inc_cant = DIV_PARTIAL_CANT if qualifies else 1.0
 
     taxable_salary = clamp(salary - an["total"])
     base_fed  = clamp(taxable_salary + dividend*inc_fed  + other - pk_buy)
     base_cant = clamp(taxable_salary + dividend*inc_cant + other - pk_buy)
 
-    # Apply deductions on respective bases
-    if bund_items or kant_items:
-        fed_ui = {k:v for k,v in (ded_inputs or {}).items() if k.startswith("BUND:")}
-        cant_ui = {k:v for k,v in (ded_inputs or {}).items() if not k.startswith("BUND:")}
-        fed_ded = compute_deductions_total(base_fed, bund_items, fed_ui) if (use_deds and bund_items) else compute_deductions_total(base_fed, bund_items, {})
-        cant_ded= compute_deductions_total(base_cant, kant_items, cant_ui) if (use_deds and kant_items) else compute_deductions_total(base_cant, kant_items, {})
-    else:
-        fed_ded=cant_ded=0.0
-
-    taxable_fed  = clamp(base_fed - fed_ded)
-    taxable_cant = clamp(base_cant - cant_ded)
-
-    fed_tax, _, _ = income_components_with_bases(taxable_fed, taxable_cant=0.0, canton_id=canton_id, bfs_id=bfs_id)
-    _, cant_tax, _ = income_components_with_bases(taxable_fed=0.0, taxable_cant=taxable_cant, canton_id=canton_id, bfs_id=bfs_id)
-    total_tax = fed_tax + cant_tax
+    ded_fed, ded_cant, fed_tax, cant_tax, total_tax = income_components_with_applied_deductions(base_fed, base_cant, canton_id, bfs_id)
 
     net_owner = (salary - an["total"]) + dividend - total_tax
-
     return {
         "salary": salary, "dividend": dividend,
         "corp_tax": corp_tax_amt, "income_tax": total_tax,
         "net": net_owner, "adjusted_net": net_owner,
         "retained_after_tax": clamp(rest - corp_tax_amt - dividend),
-        "blocks": dict(ag=ag, an=an, inc_fed=inc_fed, inc_cant=inc_cant,
-                       ded_fed=fed_ded, ded_cant=cant_ded)
+        "blocks": dict(ag=ag, an=an, inc_fed=inc_fed, inc_cant=inc_cant, ded_fed=ded_fed, ded_cant=ded_cant)
     }
 
 def optimize_mix(step=1000.0):
     age_key = age_to_band(age_input)
     qualifies = qualifies_partial(share_pct)
-    inc_fed = DIV_PARTIAL_FED if qualifies else 1.0
+    inc_fed  = DIV_PARTIAL_FED  if qualifies else 1.0
     inc_cant = DIV_PARTIAL_CANT if qualifies else 1.0
 
-    best = None
-    s = 0.0
-    corp_rate = corp_tax_rate_devbrains(canton_id, bfs_id)
+    best = None; s = 0.0
+    corp_rate = corporate_tax_rate(canton_id, bfs_id)
     while s <= (profit if desired_income is None else min(profit, desired_income)) + 1e-6:
         ag = employer_costs(s, age_key, AHV_ON_DEFAULT, fak=fak_rate, uvg=uvg_rate)
         an = employee_deductions(s, age_key, AHV_ON_DEFAULT)
@@ -450,26 +438,13 @@ def optimize_mix(step=1000.0):
         base_fed  = clamp(taxable_salary + dividend*inc_fed  + other_inc - pk_buyin)
         base_cant = clamp(taxable_salary + dividend*inc_cant + other_inc - pk_buyin)
 
-        # deductions
-        fed_ui = {k:v for k,v in (ded_inputs or {}).items() if k.startswith("BUND:")}
-        cant_ui= {k:v for k,v in (ded_inputs or {}).items() if not k.startswith("BUND:")}
-        fed_ded = compute_deductions_total(base_fed, bund_items, fed_ui) if (use_deds and bund_items) else compute_deductions_total(base_fed, bund_items, {})
-        cant_ded= compute_deductions_total(base_cant, kant_items, cant_ui) if (use_deds and kant_items) else compute_deductions_total(base_cant, kant_items, {})
-
-        taxable_fed  = clamp(base_fed  - fed_ded)
-        taxable_cant = clamp(base_cant - cant_ded)
-
-        fed_tax, _, _  = income_components_with_bases(taxable_fed, 0.0, canton_id, bfs_id)
-        _, cant_tax, _ = income_components_with_bases(0.0, taxable_cant, canton_id, bfs_id)
-        income_tax = fed_tax + cant_tax
-
-        net_owner = (s - an["total"]) + dividend - income_tax
+        ded_fed, ded_cant, fed_tax, cant_tax, total_tax = income_components_with_applied_deductions(base_fed, base_cant, canton_id, bfs_id)
+        net_owner = (s - an["total"]) + dividend - total_tax
 
         res = {"salary": s, "dividend": dividend, "net": net_owner, "adjusted_net": net_owner,
-               "income_tax": income_tax, "corp_tax": corp_tax_amt,
+               "income_tax": total_tax, "corp_tax": corp_tax_amt,
                "retained_after_tax": clamp(rest - corp_tax_amt - dividend)}
-        if (best is None) or (net_owner > best["adjusted_net"]):
-            best = res
+        if (best is None) or (net_owner > best["adjusted_net"]): best = res
         s += step
     return best
 
@@ -489,8 +464,7 @@ if profit > 0:
     st.write(f"AN AHV/ALV/BVG (abzugsfähig): CHF {A['blocks']['an']['total']:,.0f}")
     st.write(f"Körperschaftssteuer Restgewinn: CHF {A['corp_tax']:,.0f}")
     st.write(f"Einkommenssteuer (Bund + Kant./Gem. + Kirche Ø): CHF {A['income_tax']:,.0f}")
-    # Optional: show total applied deductions
-    if (A["blocks"].get("ded_fed",0) or A["blocks"].get("ded_cant",0)):
+    if (A['blocks'].get('ded_fed',0) or A['blocks'].get('ded_cant',0)):
         st.caption(f"Berücksichtigte Abzüge – Bund: CHF {A['blocks']['ded_fed']:,.0f}, Kanton/Gemeinde: CHF {A['blocks']['ded_cant']:,.0f}")
     st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {A['retained_after_tax']:,.0f}")
     st.success(f"**Netto an Inhaber (heute):** CHF {A['adjusted_net']:,.0f}")
@@ -500,10 +474,10 @@ if profit > 0:
     st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
     st.write(f"Körperschaftssteuer (nach Lohn): CHF {B['corp_tax']:,.0f}")
     st.write(f"Einkommenssteuer (Bund + Kant./Gem. + Kirche Ø): CHF {B['income_tax']:,.0f}")
-    if (B["blocks"].get("ded_fed",0) or B["blocks"].get("ded_cant",0)):
+    if (B['blocks'].get('ded_fed',0) or B['blocks'].get('ded_cant',0)):
         st.caption(f"Berücksichtigte Abzüge – Bund: CHF {B['blocks']['ded_fed']:,.0f}, Kanton/Gemeinde: CHF {B['blocks']['ded_cant']:,.0f}")
     st.write(f"Nachsteuerlicher Gewinn einbehalten: CHF {B['retained_after_tax']:,.0f}")
-    st.caption(f"Teilbesteuerung Dividenden (vereinfachte Annahme): Bund {int((DIV_PARTIAL_FED if qualifies_partial(share_pct) else 1.0)*100)}%, "
+    st.caption(f"Teilbesteuerung Dividenden: Bund {int((DIV_PARTIAL_FED if qualifies_partial(share_pct) else 1.0)*100)}%, "
                f"Kanton {int((DIV_PARTIAL_CANT if qualifies_partial(share_pct) else 1.0)*100)}% (ab 10% Beteiligung).")
     st.success(f"**Netto an Inhaber (heute):** CHF {B['adjusted_net']:,.0f}")
 
@@ -537,5 +511,6 @@ if profit > 0:
         st.write(f"Körperschaftssteuer-Satz gesamt (effektiv): {cr:.2%}")
         fed_present = any(t.get('taxType')=='EINKOMMENSSTEUER' for t in load_tarifs_federal_if_any())
         st.write(f"Bundestarife vorhanden: {'Ja' if fed_present else 'Nein'} (tarifs/0.json)")
+
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
