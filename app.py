@@ -1,13 +1,14 @@
-# app.py – Lohn vs. Dividende (devbrains 2025; full canton engine incl. BL fix + simple tax chart)
+# app.py – Lohn vs. Dividende (devbrains 2025; full canton engine incl. BL fix + plotly chart)
 # -----------------------------------------------------------------------------
 # Uses the devbrains "parsed/2025" dataset (locations, tarifs, factors) and
 # reproduces the tariff engines (ZUERICH, BUND, FREIBURG, FLATTAX, FORMEL)
 # with correct splitting + rounding. Church tax uses factors by confession.
+# Dividenden-Teilbesteuerung: Bund fix 70%, Kanton dynamisch per JSON.
 # -----------------------------------------------------------------------------
 
 import json, math, pathlib, re
 import streamlit as st
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # (unused but left untouched)
 import plotly.graph_objects as go
 
 # ------------------------- Data roots -------------------------
@@ -85,6 +86,28 @@ def load_factors(canton_id:int):
     with (YEAR_ROOT / "factors" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
         return json.load(f)
 
+# --- NEW: dynamic Teilbesteuerung (cantonal) -------------------
+@st.cache_data(show_spinner=False)
+def load_dividend_inclusion_map():
+    """
+    Returns map {"ZH": 0.5, "FR": 0.7, ...} with cantonal inclusion factors.
+    Searches common locations; defaults handled in incl_rates().
+    """
+    candidates = []
+    for base in [APP_DIR, YEAR_ROOT, APP_DIR / "data", pathlib.Path("/mnt/data")]:
+        if not base:
+            continue
+        candidates += list(base.glob("Teilbesteuerung_Dividenden*.json"))
+    for fp in candidates:
+        try:
+            with fp.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and data:
+                    return data
+        except Exception:
+            continue
+    return {}
+
 # ------------------------- Tariff engine ----------------------
 def pick_income_table(tariffs:list, tax_type="EINKOMMENSSTEUER"):
     if not tariffs: return None
@@ -105,7 +128,7 @@ def eval_zuerich(rows, taxable, split=1):
     for r in rows:
         width=float(r.get("amount") or 0.0)
         pct=(r.get("percent") or 0.0)/100.0
-        if width<=0: continue  # skip placeholder rows
+        if width<=0: continue
         use=min(rem,width)
         tax += use*pct
         rem -= use
@@ -260,8 +283,15 @@ def employer_costs(salary: float, age_key: str, fak=0.015, uvg=0.01):
     return dict(ahv=ahv, alv=alv, bvg=bvg, extra=extra, total=ahv+alv+bvg+extra)
 
 def qualifies_partial(share_pct): return (share_pct or 0.0) >= 10.0
-def incl_rates(qualifies):
-    return (0.70 if qualifies else 1.0, 0.70 if qualifies else 1.0)
+
+# --- UPDATED: incl_rates -> canton from JSON, Bund fixed 70% ---
+def incl_rates(qualifies: bool, canton_code: str):
+    if not qualifies:
+        return 1.0, 1.0
+    inc_fed = 0.70
+    mapping = load_dividend_inclusion_map()
+    inc_cant = float(mapping.get(canton_code, 0.70))
+    return inc_fed, inc_cant
 
 def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int, relationship:str, children:int, confession:str):
     groups = groups_for_relationship(relationship, children)
@@ -372,7 +402,8 @@ def scenario_salary_only():
 def scenario_dividend():
     age_key = age_to_band(age_input)
     qualifies = qualifies_partial(share_pct)
-    inc_fed, inc_cant = incl_rates(qualifies)
+    # UPDATED: pass canton_code for cantonal inclusion
+    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
 
     salary = min(min_salary, profit if desired_income is None else min(profit, desired_income))
     ag = employer_costs(salary, age_key, fak=fak_rate, uvg=uvg_rate)
@@ -411,7 +442,8 @@ def optimize_mix(step=1_000.0):
     best=None
     age_key = age_to_band(age_input)
     qualifies = qualifies_partial(share_pct)
-    inc_fed, inc_cant = incl_rates(qualifies)
+    # UPDATED: pass canton_code
+    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
 
     cap = profit if desired_income is None else min(profit, desired_income)
     s=0.0
@@ -439,8 +471,6 @@ def optimize_mix(step=1_000.0):
     return best
 
 # ------------------------- Chart helper ------------------------
-import plotly.graph_objects as go
-
 def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
     labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
     values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
@@ -467,9 +497,9 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
     # Minimal layout, NO background, NO grid
     fig.update_layout(
         title=title,
-        template=None,                              # <- no theme background
-        plot_bgcolor="rgba(0,0,0,0)",               # <- transparent plot area
-        paper_bgcolor="rgba(0,0,0,0)",              # <- transparent outer area
+        template=None,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
         height=300,
         bargap=0.45,
         margin=dict(l=80, r=20, t=50, b=10),
@@ -490,6 +520,7 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
         )
 
     st.plotly_chart(fig, use_container_width=True, theme=None)
+
 # ------------------------- Run & render ------------------------
 if profit > 0:
     A = scenario_salary_only()
