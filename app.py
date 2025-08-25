@@ -17,59 +17,52 @@ st.set_page_config(page_title="Lohn vs. Dividende", layout="wide")
 
 # ======= BRAND THEME (edit only the variables in :root) =======
 st.markdown("""
-<!-- Keep Streamlit's icon fonts -->
-<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-
 <style>
+/* Don't touch global fonts anymore */
+body, .stApp, .block-container { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial !important; }
+
+/* 1) Hide the broken ligature text */
+[class*="material-icons"],
+[class*="material-icons-round"]{
+  font-size:0 !important;            /* makes the 'keyboard_arrow_down' text invisible */
+  width:0 !important; height:0 !important;
+  overflow:hidden !important;
+}
+
+/* 2) Add our own chevron to Select/Number/Text inputs */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div,
+div[data-baseweb="numericinput"] > div{
+  position:relative;
+  border-radius:12px !important;
+}
+
+/* Chevron for Select only */
+div[data-baseweb="select"] > div::after{
+  content:"";
+  pointer-events:none;
+  position:absolute;
+  right:12px; top:50%; transform:translateY(-50%);
+  width:12px; height:12px;
+  background-repeat:no-repeat; background-size:12px 12px;
+  /* inline SVG so we don't rely on external fonts */
+  background-image:url("data:image/svg+xml;utf8,\
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231A1A1A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>\
+  <polyline points='6 9 12 15 18 9'/></svg>");
+}
+
+/* Keep your general look (adjust colors as needed) */
 :root{
-  --tp-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-  --tp-primary:#0A3C7D; --tp-text:#1A1A1A; --tp-muted:#475569;
-  --tp-bg:#FFFFFF; --tp-card:#F6F7F9; --tp-border:#E5E7EB;
-  --tp-radius:12px; --tp-shadow:0 2px 14px rgba(16,24,40,.06);
+  --tp-primary:#0A3C7D;
+  --tp-border:#E5E7EB;
+  --tp-card:#F6F7F9;
+  --tp-text:#1A1A1A;
 }
-
-/* ❌ DO NOT override fonts on everything */
-/* Only set fonts on content elements */
-body, .stApp, .block-container,
-.stMarkdown, .stText, .stButton button,
-input, textarea, select, label, [data-baseweb]{
-  font-family: var(--tp-font) !important;
-  color: var(--tp-text);
-}
-
-/* ✅ Ensure icon ligatures render correctly */
-.material-icons, .material-icons-round, .katex, [class*="material-icons"]{
-  font-family: 'Material Icons Round' !important;
-  font-weight: normal; font-style: normal; font-size: 24px;
-  line-height: 1; letter-spacing: normal; text-transform: none;
-  display: inline-block; white-space: nowrap; word-wrap: normal;
-  direction: ltr; -webkit-font-feature-settings: 'liga';
-  -webkit-font-smoothing: antialiased;
-}
-
-/* Layout + components (same as before, trimmed) */
-html, body, [data-testid="stAppViewContainer"]{ background:var(--tp-bg) !important; }
+html, body, [data-testid="stAppViewContainer"]{ background:#fff !important; color:var(--tp-text); }
 .block-container{ max-width:1200px; padding-top:24px; padding-bottom:64px; }
 h1{ font-weight:700; font-size:34px; margin:8px 0 12px; letter-spacing:-.01em; }
-h2{ font-weight:600; font-size:22px; margin:20px 0 8px; }
-
 [data-testid="stExpander"] > details{
-  background:var(--tp-card)!important; border:1px solid var(--tp-border)!important;
-  border-radius:var(--tp-radius)!important; box-shadow:var(--tp-shadow);
-}
-[data-testid="stExpander"] summary{ font-weight:600; }
-
-div[data-baseweb="select"] > div, input, textarea{
-  border-radius:var(--tp-radius)!important; border:1px solid var(--tp-border)!important; background:#fff!important;
-}
-div[data-baseweb="select"]:focus-within > div, input:focus, textarea:focus{
-  border-color:var(--tp-primary)!important; box-shadow:0 0 0 3px rgba(10,60,125,.12)!important;
-}
-
-.stButton > button{
-  background:var(--tp-primary)!important; color:#fff!important; border:1px solid var(--tp-primary)!important;
-  border-radius:var(--tp-radius)!important; padding:10px 14px; font-weight:600; box-shadow:var(--tp-shadow);
+  background:var(--tp-card)!important; border:1px solid var(--tp-border)!important; border-radius:12px!important;
 }
 
 /* Hide embed chrome */
