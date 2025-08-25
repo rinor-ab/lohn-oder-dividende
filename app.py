@@ -1,4 +1,4 @@
-# app.py — Lohn vs. Dividende (devbrains 2025; strict deduction scoping; federal insurance cap; robust UI)
+# app.py — Lohn vs. Dividende (devbrains 2025 dataset; robust income table & factor synonyms; deductions fixed)
 import json, pathlib
 import streamlit as st
 from functools import lru_cache
@@ -77,12 +77,35 @@ def load_deductions(canton_id: int):
     return bund, kant
 
 # ================= Tariff evaluation ==================
-def _find_table(tarifs, tax_type: str, group: str = "ALLE"):
-    cand = [t for t in tarifs if t.get("taxType")==tax_type and (t.get("group","")==group)]
-    if cand: return cand[0]
-    for t in tarifs:
-        if t.get("taxType")==tax_type: return t
-    return None
+def _is_income_tax_type(x: str) -> bool:
+    s = (x or "").lower()
+    # accept German w/ or w/o 's', French, Italian keywords
+    return (
+        "einkommen" in s or "einkommens" in s or
+        ("imp" in s and "reven" in s) or           # impôt sur le revenu
+        ("reddito" in s) or ("imposta" in s)
+    )
+
+def _find_income_table_any(tarifs):
+    """Return a sensible income tax table from a canton/federal tarifs file."""
+    if not tarifs:
+        return None
+    cand = [t for t in tarifs if _is_income_tax_type(t.get("taxType"))]
+    if not cand:
+        return None
+    # prefer group==ALLE
+    for t in cand:
+        if (t.get("group") or "").upper() == "ALLE":
+            rows = t.get("table") or []
+            if rows:
+                return t
+    # otherwise pick the first table that actually has non-zero rates
+    def score(t):
+        rows = t.get("table") or []
+        nz = sum(1 for r in rows if float(r.get("percent", 0) or 0) > 0)
+        return (nz, len(rows))
+    cand.sort(key=score, reverse=True)
+    return cand[0] if cand else None
 
 def _eval_step_table(table_rows, amount: float) -> float:
     rem = clamp(amount); tax = 0.0
@@ -94,29 +117,43 @@ def _eval_step_table(table_rows, amount: float) -> float:
         tax += use * pct; rem -= use
     return tax
 
-def eval_tariff(tariff_obj, amount: float, force_split_factor:int = 1) -> float:
+def eval_tariff(tariff_obj, amount: float) -> float:
     if not tariff_obj: return 0.0
-    table_type = (tariff_obj.get("tableType") or "").upper()
-    split = 1 if force_split_factor==1 else max(1, force_split_factor)
-    base = clamp(amount / split)
+    splitting = int(tariff_obj.get("splitting", 1) or 1)
+    base = clamp(amount / max(1, splitting))
     rows = tariff_obj.get("table") or []
-    if table_type == "FLATTAX":
+    ttype = (tariff_obj.get("tableType") or "").upper()
+    if ttype == "FLATTAX":
         pct = float(rows[0].get("percent", 0.0))/100.0 if rows else 0.0
-        return base * pct * split
-    return _eval_step_table(rows, base) * split
+        return base * pct * max(1, splitting)
+    return _eval_step_table(rows, base) * max(1, splitting)
 
 # ================= Factors lookup =====================
+def _first_key(d: dict, *keys, default=0.0) -> float:
+    for k in keys:
+        if k in d and d[k] is not None:
+            try:
+                return float(d[k])
+            except:
+                pass
+    return default
+
 def factors_for_bfs(canton_id: int, bfs_id: int):
     arr = load_factors(canton_id)
     for rec in arr:
         loc = rec.get("Location") or {}
         if int(loc.get("BfsID", -1)) == int(bfs_id):
+            inc_cant = _first_key(rec, "IncomeRateCanton", "IncomeTaxRateCanton", default=100.0)
+            inc_city = _first_key(rec, "IncomeRateCity", "IncomeRateMunicipality", "IncomeRateCommune", default=0.0)
+            prof_cant = _first_key(rec, "ProfitTaxRateCanton", default=100.0)
+            prof_city = _first_key(rec, "ProfitTaxRateCity", "ProfitTaxRateMunicipality", "ProfitTaxRateCommune", default=0.0)
             return {
-                "IncomeRateCanton": float(rec.get("IncomeRateCanton", 100.0)),
-                "IncomeRateCity":   float(rec.get("IncomeRateCity",   0.0)),
-                "ProfitTaxRateCanton": float(rec.get("ProfitTaxRateCanton", 100.0)),
-                "ProfitTaxRateCity":   float(rec.get("ProfitTaxRateCity",   0.0)),
+                "IncomeRateCanton": inc_cant,
+                "IncomeRateCity":   inc_city,
+                "ProfitTaxRateCanton": prof_cant,
+                "ProfitTaxRateCity":   prof_city,
             }
+    # safe defaults
     return {"IncomeRateCanton":100.0,"IncomeRateCity":0.0,"ProfitTaxRateCanton":100.0,"ProfitTaxRateCity":0.0}
 
 # ================= Deductions engine ==================
@@ -142,7 +179,6 @@ def parse_flags(fmt: str):
 
 def compute_deductions_total(base_amount: float, items_with_scope, ui_values: dict, use_default_ids=None) -> float:
     """
-    Generic computation with MINIMUM/MAXIMUM/%; clamp to base.
     Only items in use_default_ids may auto-apply JSON default/percent.
     All other items contribute only if the user entered >0 (then min/max are enforced).
     """
@@ -208,7 +244,7 @@ def pick_curated_items(bund_groups, kant_groups):
         if exact: return _match_item_exact(K, exact) or _match_item_exact(B, exact)
         return _match_item_keywords(K, *kws) or _match_item_keywords(B, *kws)
 
-    # STRICT: insurance only from **Bund** (AG: capped 1'800; canton = 0)
+    # STRICT: insurance only from **Bund** (e.g., AG cap 1'800; some cantons have 0 cantonal insurance)
     curated = {
         "vers":      first_bund_only(exact="versicherungsprämien und zinsen von sparkapitalien") \
                      or first_bund_only("versicherungsprämien", ["sparkapital","spar"]),
@@ -228,29 +264,50 @@ def pick_curated_items(bund_groups, kant_groups):
 def income_components_with_bases(taxable_fed: float, taxable_cant: float, canton_id: int, bfs_id: int):
     t_fed = clamp(taxable_fed); t_cant = clamp(taxable_cant)
 
+    # ---- FED ----
     fed_tarifs = load_tarifs_federal_if_any()
-    fed_table  = _find_table(fed_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    fed_tax    = eval_tariff(fed_table, t_fed, 1) if fed_table else 0.0
+    fed_table  = _find_income_table_any(fed_tarifs)
+    fed_tax    = eval_tariff(fed_table, t_fed) if fed_table else 0.0
+    if t_fed > 0 and fed_tax == 0.0 and fed_table is None:
+        st.warning("Bundestarif nicht gefunden (tarifs/0.json) – Bundessteuer = 0.")
 
+    # ---- CANTON + CITY ----
     cant_tarifs = load_tarifs(canton_id)
-    cant_table  = _find_table(cant_tarifs, "EINKOMMENSSTEUER", "ALLE")
-    base_cant   = eval_tariff(cant_table, t_cant, 1) if cant_table else 0.0
+    cant_table  = _find_income_table_any(cant_tarifs)
+    base_cant   = eval_tariff(cant_table, t_cant) if cant_table else 0.0
+    if t_cant > 0 and base_cant == 0.0 and cant_table is None:
+        st.warning(f"Kantonstarif nicht gefunden (tarifs/{canton_id}.json) – Kantonssteuer-Basis = 0.")
 
     fac = factors_for_bfs(canton_id, bfs_id)
-    mult = (fac["IncomeRateCanton"] + fac["IncomeRateCity"]) / 100.0
+    inc_rate_cant = float(fac.get("IncomeRateCanton", 100.0) or 0.0)
+    inc_rate_city = float(fac.get("IncomeRateCity",   0.0)  or 0.0)
+    mult = (inc_rate_cant + inc_rate_city) / 100.0
+    if mult <= 0:
+        mult = 1.0  # safe fallback
+
     cant_city = base_cant * mult
     cant_city_church = cant_city * (1.0 + CHURCH_AVG_RATE)
 
-    return fed_tax, cant_city_church, (fed_tax + cant_city_church)
+    total = fed_tax + cant_city_church
+
+    # guard rail for tricky cantons (SH, BL, FR, GE, GL, GR, LU, NE, SO, TG, TI, …)
+    if (t_fed > 0 or t_cant > 0) and total == 0.0:
+        st.warning("Steuerbasis > 0 aber Steuer = 0. Prüfe Tariftabellen/Multiplikatoren für diesen Ort.")
+
+    return fed_tax, cant_city_church, total
 
 def corporate_tax_rate(canton_id: int, bfs_id: int) -> float:
     tarifs = load_tarifs(canton_id)
-    corp = _find_table(tarifs, "GEWINNSTEUER")
-    if not corp: return 0.10
-    rows = corp.get("table") or []
-    base_pct = float(rows[0].get("percent", 0.0))/100.0 if rows else 0.0
+    # prefer a profit/gewinn tax table if present; otherwise fallback to a simple 10%
+    cand = [t for t in (tarifs or []) if _norm_text(t.get("taxType")).find("gewinn") >= 0 or _norm_text(t.get("taxType")).find("profit") >= 0]
+    if cand:
+        rows = cand[0].get("table") or []
+        base_pct = float(rows[0].get("percent", 0.0))/100.0 if rows else 0.0
+    else:
+        base_pct = 0.10
     fac = factors_for_bfs(canton_id, bfs_id)
-    mult = (fac["ProfitTaxRateCanton"] + fac["ProfitTaxRateCity"]) / 100.0
+    mult = (float(fac.get("ProfitTaxRateCanton",100.0)) + float(fac.get("ProfitTaxRateCity",0.0))) / 100.0
+    if mult <= 0: mult = 1.0
     return base_pct * mult
 
 def qualifies_partial(share_pct): return (share_pct or 0.0) >= 10.0
@@ -364,7 +421,7 @@ def apply_curated_deductions(base_fed, base_cant):
         if not tup:
             continue
         scope, item = tup
-        scope = _norm_scope(scope)  # normalize again just in case
+        scope = _norm_scope(scope)  # normalize
         iid = str(item.get("id",""))
 
         if key == "beruf":
@@ -413,8 +470,7 @@ def scenario_salary_only(profit, desired, canton_id, bfs_id, age_key, ahv_on, ot
     corp_rate = corporate_tax_rate(canton_id, bfs_id)
     corp_tax_amt = rest * corp_rate
 
-    # Devbrains-style base — employee social contributions are NOT auto-subtracted here
-    base_fed  = clamp(salary + other - pk_buy)
+    base_fed  = clamp(salary + other - pk_buy)   # AN-Beiträge NICHT automatisch abziehen
     base_cant = clamp(salary + other - pk_buy)
 
     ded_fed, ded_cant, fed_tax, cant_tax, total_tax = income_components_with_applied_deductions(base_fed, base_cant, canton_id, bfs_id)
@@ -559,8 +615,7 @@ if profit > 0:
         st.write(f"Faktoren Gewinn:   Kanton {fac['ProfitTaxRateCanton']}% + Gemeinde {fac['ProfitTaxRateCity']}%")
         cr = corporate_tax_rate(canton_id, bfs_id)
         st.write(f"Körperschaftssteuer-Satz gesamt (effektiv): {cr:.2%}")
-        fed_present = any(t.get('taxType')=='EINKOMMENSSTEUER' for t in load_tarifs_federal_if_any())
+        fed_present = any(_is_income_tax_type(t.get('taxType')) for t in load_tarifs_federal_if_any())
         st.write(f"Bundestarife vorhanden: {'Ja' if fed_present else 'Nein'} (tarifs/0.json)")
-
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
