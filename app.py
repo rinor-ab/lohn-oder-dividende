@@ -12,8 +12,6 @@ import matplotlib.pyplot as plt  # (unused but left untouched)
 import plotly.graph_objects as go
 import streamlit as st
 
-import streamlit as st
-
 
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
@@ -348,19 +346,19 @@ with st.expander("ANNAHMEN", expanded=True):
             options=[("s","Ledig"),("c","Konkubinat"),("m","Verheiratet"),("rp","Eingetragene Partnerschaft")],
             index=0, format_func=lambda x: x[1]
         )[0]
-        children     = st.number_input("Kinder (für Splitting & Bund-Kinderabzug)", 0, step=1)
+        children     = st.number_input("Kinder", 0, step=1)
         confession   = st.selectbox(
             "Konfession (Kirchensteuer)",
             options=[("none","Keine"),("roman","Röm.-kath."),("protestant","Ref./evang."),("christ","Christkath.")],
             index=0, format_func=lambda x: x[1]
         )[0]
-        share_pct    = st.number_input("Beteiligungsquote [%] (Teilbesteuerung Div. ab 10 %)", 0.0, 100.0, 100.0, step=5.0)
+        share_pct    = st.number_input("Beteiligungsquote [%] (Teilbesteuerung Div. ab 10%)", 0.0, 100.0, 100.0, step=5.0)
         min_salary   = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
     with cB:
         pk_buyin     = st.number_input("PK-Einkauf (privat) / PK-Abzug [CHF]", 0.0, step=1.0)
         fak_rate     = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
         uvg_rate     = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
-        st.caption("AHV/ALV/BVG standardmäßig **an**. Regelmodus fix **Strikt**.")
+        st.caption("AHV/ALV/BVG standardmässig **an**.")
     st.markdown("---")
     st.markdown("**Abzüge – manuell** (direkt vom steuerbaren Einkommen abgezogen):")
     d1, d2 = st.columns(2)
