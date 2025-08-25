@@ -1,6 +1,13 @@
-# app.py – Lohn vs. Dividende (devbrains 2025: correct canton engines, splitting & church, simplified deductions)
-import json, math, pathlib
+# app.py – Lohn vs. Dividende (devbrains 2025; full canton engine incl. BL fix + simple tax chart)
+# -----------------------------------------------------------------------------
+# Uses the devbrains "parsed/2025" dataset (locations, tarifs, factors) and
+# reproduces the tariff engines (ZUERICH, BUND, FREIBURG, FLATTAX, FORMEL)
+# with correct splitting + rounding. Church tax uses factors by confession.
+# -----------------------------------------------------------------------------
+
+import json, math, pathlib, re
 import streamlit as st
+import matplotlib.pyplot as plt
 
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
@@ -8,7 +15,7 @@ CANDIDATE_DATA_ROOTS = [
     APP_DIR / "data" / "parsed" / "2025",
     APP_DIR / "parsed" / "2025",
     APP_DIR / "2025",
-    pathlib.Path("/mnt/data/2025"),  # works if you run from a notebook
+    pathlib.Path("/mnt/data/2025"),  # also works when running in notebooks
 ]
 YEAR_ROOT = None
 for p in CANDIDATE_DATA_ROOTS:
@@ -23,21 +30,24 @@ if YEAR_ROOT is None:
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
 
-# devbrains gross→net for income tax base
+# devbrains gross->net for *income tax* base (AN-Seite)
 AHV_IV_EO = 0.053
 ALV      = 0.011
 NBU      = 0.004
 ALV_NBU_CEILING = 148_200.0
 
-# BVG (nur für Arbeitgeber/Arbeitnehmer Anzeige)
+# BVG (nur Anzeige der Kostenblöcke)
 BVG_rates = {"25-34": 0.07, "35-44": 0.10, "45-54": 0.15, "55-65": 0.18}
 BVG_entry_threshold = 22_680.0
 BVG_coord_deduction = 26_460.0
 BVG_max_insured     = 90_720.0
 
-def clamp_pos(x): 
-    try: return max(0.0, float(x or 0.0))
-    except: return 0.0
+# ------------------------- Small helpers ----------------------
+def clamp_pos(x):
+    try:
+        return max(0.0, float(x or 0.0))
+    except:
+        return 0.0
 
 def age_to_band(age:int)->str:
     a=int(age or 35)
@@ -48,6 +58,9 @@ def age_to_band(age:int)->str:
 
 def bvg_insured_part(salary):
     return max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
+
+def dinero_round_100_down(x: float) -> float:
+    return math.floor((x or 0.0)/100.0)*100.0
 
 # ------------------------- Loaders ----------------------------
 @st.cache_data(show_spinner=False)
@@ -71,19 +84,28 @@ def load_factors(canton_id:int):
     with (YEAR_ROOT / "factors" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
         return json.load(f)
 
-# ------------------------- Tariff engine (devbrains parity) ---
-def dinero_round_100_down(x: float) -> float:
-    return math.floor((x or 0.0)/100.0)*100.0
+# ------------------------- Tariff engine ----------------------
+def pick_income_table(tariffs:list, tax_type="EINKOMMENSSTEUER"):
+    if not tariffs: return None
+    cands=[t for t in tariffs if (t.get("taxType") or "").upper()==tax_type.upper()]
+    if not cands: return None
+    for t in cands:
+        if (t.get("group") or "").strip().upper()=="ALLE":
+            return t
+    for t in cands:
+        g=(t.get("group") or "").upper()
+        if "LEDIG" in g or "ALLEINE" in g:
+            return t
+    return cands[0]
 
 def eval_zuerich(rows, taxable, split=1):
     base = taxable / max(1, split)
-    rem = base
-    tax = 0.0
+    rem = base; tax = 0.0
     for r in rows:
-        amount=float(r.get("amount") or 0.0)
+        width=float(r.get("amount") or 0.0)
         pct=(r.get("percent") or 0.0)/100.0
-        if amount<=0: continue
-        use=min(rem, amount)
+        if width<=0: continue  # skip placeholder rows
+        use=min(rem,width)
         tax += use*pct
         rem -= use
         if rem<=0: break
@@ -126,24 +148,43 @@ def eval_flattax(rows, taxable, split=1):
     r = rows[0] if rows else {}
     return taxable * ((r.get("percent") or 0.0)/100.0)
 
+def _normalize_formula(expr: str) -> str:
+    """Make devbrains 'FORMEL' rows executable in Python (robust for BL)."""
+    if not expr: return ""
+    s = expr.replace("$wert$", "X")
+    s = re.sub(r"\bln\s*\(\s*X\s*\)", "log(X)", s)
+    s = re.sub(r"\blog\s*\(\s*X\s*\)", "log(X)", s)
+    s = re.sub(r"\blog\s+X\b", "log(X)", s)
+    return s
+
 def eval_formel(rows, taxable, split=1):
     base = taxable / max(1, split)
     selected=None
     for r in rows:
-        am=float(r.get("amount") or 0.0)
-        if am<=base: selected=r
-        else: break
-    expr=(selected or {}).get("formula") or ""
-    safe = expr.replace("$wert$", "X").replace("log X","log(X)")
+        thr=float(r.get("amount") or 0.0)
+        frm=(r.get("formula") or "").strip()
+        if thr<=base and frm:
+            selected=r
+        elif thr>base:
+            break
+    if selected is None:
+        for r in reversed(rows):
+            if (r.get("formula") or "").strip():
+                selected=r
+                break
+    if selected is None:
+        return 0.0
+    expr = _normalize_formula(selected["formula"])
     try:
-        val = eval(safe, {"__builtins__":{}}, {"log":math.log, "X":base})
+        val = eval(expr, {"__builtins__": {}}, {"log": math.log, "X": base})
         return float(val) * max(1, split)
     except Exception:
         return 0.0
 
 def groups_for_relationship(relationship: str, children: int):
     groups=[]
-    if relationship in ("m","rp"): groups.append("VERHEIRATET")
+    if relationship in ("m","rp"):
+        groups.append("VERHEIRATET")
     else:
         if (children or 0)>0: groups.append("LEDIG_MIT_KINDER")
         if relationship=="s": groups.append("LEDIG_ALLEINE")
@@ -168,22 +209,20 @@ def pick_tarif(canton_id:int, tax_type:str, groups: list[str]):
 def eval_tariff_amount(tarif_obj, taxable: float, group: str):
     if not tarif_obj or taxable<=0: return 0.0
     table_type = (tarif_obj.get("tableType") or "").upper()
-    # devbrains workaround: some ZUERICH tables actually carry base taxes -> treat as BUND
+    # Zurich table sometimes carries base taxes -> treat as BUND
     if table_type=="ZUERICH" and any((row.get("taxes") or 0)>0 for row in (tarif_obj.get("table") or [])):
         table_type="BUND"
     split = int(tarif_obj.get("splitting") or 0)
     split_ok = (split>0 and group_splitting_eligible(group))
     split_val = split if split_ok else 1
-    # IMPORTANT: devbrains rounds after splitting
+    # devbrains: round down after splitting
     taxable_rounded = dinero_round_100_down(taxable / split_val) * split_val
-
     rows = tarif_obj.get("table") or []
     if table_type=="FLATTAX":  return eval_flattax(rows,   taxable_rounded, split_val)
     if table_type=="ZUERICH":  return eval_zuerich(rows,   taxable_rounded, split_val)
     if table_type=="BUND":     return eval_bund(rows,      taxable_rounded, split_val)
     if table_type=="FREIBURG": return eval_freiburg(rows,  taxable_rounded, split_val)
     if table_type=="FORMEL":   return eval_formel(rows,    taxable_rounded, split_val)
-    # fallback: treat as zürich
     return eval_zuerich(rows, taxable_rounded, split_val)
 
 # ------------------------- Factors (multipliers) ---------------
@@ -200,52 +239,7 @@ def church_income_factor(confession:str, factor:dict)->float:
     if confession=="protestant":  return float(factor.get("IncomeRateProtestant") or 0.0)
     return 0.0  # none
 
-# ------------------------- UI ----------------------------------
-st.title("Lohn vs. Dividende")
-st.caption("Devbrains 2025 Tarife – korrekte Auswertung pro Kanton (BUND/ZH/FR/Flat/Formel), Splitting & Kirchensteuer nach Konfession. BVG nach Alter.")
-
-# Location
-_, by_canton = load_locations()
-canton_code = st.selectbox("Kanton", sorted(by_canton.keys()))
-gemeinde_rec = st.selectbox("Gemeinde", options=by_canton[canton_code], format_func=lambda r: r["BfsName"])
-BFS_ID   = int(gemeinde_rec["BfsID"])
-CANT_ID  = int(gemeinde_rec["CantonID"])
-
-col1, col2 = st.columns(2)
-with col1:
-    profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
-    desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
-with col2:
-    other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
-    age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
-
-with st.expander("ANNAHMEN", expanded=True):
-    st.subheader("Annahmen")
-    cA, cB = st.columns(2)
-    with cA:
-        relationship = st.selectbox("Zivilstand", options=[("s","Ledig"),("c","Konkubinat"),("m","Verheiratet"),("rp","Eingetragene Partnerschaft")], index=0, format_func=lambda x: x[1])[0]
-        children     = st.number_input("Kinder (für Splitting & Bund-Kinderabzug)", 0, step=1)
-        confession   = st.selectbox("Konfession (Kirchensteuer)", options=[("none","Keine"),("roman","Röm.-kath."),("protestant","Ref./evang."),("christ","Christkath.")], index=0, format_func=lambda x: x[1])[0]
-        share_pct    = st.number_input("Beteiligungsquote [%] (Teilbesteuerung Div. ab 10 %)", 0.0, 100.0, 100.0, step=5.0)
-        min_salary   = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
-    with cB:
-        pk_buyin     = st.number_input("PK-Einkauf (privat) / PK-Abzug [CHF]", 0.0, step=1.0)
-        fak_rate     = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
-        uvg_rate     = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
-        st.caption("AHV/ALV/BVG standardmäßig **an**. Regelmodus fix **Strikt**.")
-    st.markdown("---")
-    st.markdown("**Abzüge – manuell** (direkt vom steuerbaren Einkommen abgezogen; solange der komplette Abzugskatalog nicht 1:1 portiert ist):")
-    d1, d2 = st.columns(2)
-    with d1: fed_ded_manual  = st.number_input("Abzüge **Bund** [CHF]", 0.0, step=100.0, value=0.0)
-    with d2: cant_ded_manual = st.number_input("Abzüge **Kanton/Gemeinde** [CHF]", 0.0, step=100.0, value=0.0)
-
-optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
-debug_mode   = st.checkbox("Debug-Informationen anzeigen", value=False)
-
-if desired_income == 0: desired_income = None
-elif desired_income and desired_income > profit: desired_income = profit
-
-# ------------------------- Helpers for this app ---------------
+# ------------------------- Payroll & tax helpers ---------------
 def gross_to_net_for_tax(gross: float, pk: float)->tuple[float, dict]:
     """Devbrains gross->net used for the taxable income base (AN side only)."""
     g = clamp_pos(gross)
@@ -276,34 +270,90 @@ def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int, relationship:st
     canton = base * ((factor.get("IncomeRateCanton",0.0) or 0.0)/100.0) if factor else 0.0
     city   = base * ((factor.get("IncomeRateCity",0.0) or 0.0)/100.0)   if factor else 0.0
     church = base * (church_income_factor(confession, factor)/100.0)     if factor else 0.0
-    return base, canton, city, church, grp, tarif
+
+    # Optional: Personalsteuer if present as a separate tariff in some cantons
+    pers_tarif, _ = pick_tarif(canton_id, "PERSONALSTEUER", groups)
+    personal = eval_tariff_amount(pers_tarif, taxable_canton, grp) if pers_tarif else 0.0
+
+    return base, canton, city, church, personal, grp, tarif
 
 def federal_tax(taxable_bund: float, relationship:str, children:int):
     groups = groups_for_relationship(relationship, children)
     tarif, grp = pick_tarif(0, "EINKOMMENSSTEUER", groups)
     taxes = eval_tariff_amount(tarif, taxable_bund, grp)
-    # devbrains: minus 251 CHF per child on federal income tax
+    # devbrains: −251 CHF pro Kind auf der Bundessteuer
     taxes = max(0.0, taxes - 251.0*children)
     return taxes, grp, tarif
+
+# ------------------------- UI ----------------------------------
+st.title("Lohn vs. Dividende")
+st.caption("Devbrains 2025 Tarife – korrekte Auswertung (ZH/BUND/FR/FLATTAX/FORMEL). Splitting & Kirchensteuer nach Konfession. BVG nach Alter.")
+
+# Location
+_, by_canton = load_locations()
+canton_code = st.selectbox("Kanton", sorted(by_canton.keys()))
+gemeinde_rec = st.selectbox("Gemeinde", options=by_canton[canton_code], format_func=lambda r: r["BfsName"])
+BFS_ID   = int(gemeinde_rec["BfsID"])
+CANT_ID  = int(gemeinde_rec["CantonID"])
+
+col1, col2 = st.columns(2)
+with col1:
+    profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
+    desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
+with col2:
+    other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
+    age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
+
+with st.expander("ANNAHMEN", expanded=True):
+    st.subheader("Annahmen")
+    cA, cB = st.columns(2)
+    with cA:
+        relationship = st.selectbox(
+            "Zivilstand",
+            options=[("s","Ledig"),("c","Konkubinat"),("m","Verheiratet"),("rp","Eingetragene Partnerschaft")],
+            index=0, format_func=lambda x: x[1]
+        )[0]
+        children     = st.number_input("Kinder (für Splitting & Bund-Kinderabzug)", 0, step=1)
+        confession   = st.selectbox(
+            "Konfession (Kirchensteuer)",
+            options=[("none","Keine"),("roman","Röm.-kath."),("protestant","Ref./evang."),("christ","Christkath.")],
+            index=0, format_func=lambda x: x[1]
+        )[0]
+        share_pct    = st.number_input("Beteiligungsquote [%] (Teilbesteuerung Div. ab 10 %)", 0.0, 100.0, 100.0, step=5.0)
+        min_salary   = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
+    with cB:
+        pk_buyin     = st.number_input("PK-Einkauf (privat) / PK-Abzug [CHF]", 0.0, step=1.0)
+        fak_rate     = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
+        uvg_rate     = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
+        st.caption("AHV/ALV/BVG standardmäßig **an**. Regelmodus fix **Strikt**.")
+    st.markdown("---")
+    st.markdown("**Abzüge – manuell** (direkt vom steuerbaren Einkommen abgezogen):")
+    d1, d2 = st.columns(2)
+    with d1: fed_ded_manual  = st.number_input("Abzüge **Bund** [CHF]", 0.0, step=100.0, value=0.0)
+    with d2: cant_ded_manual = st.number_input("Abzüge **Kanton/Gemeinde** [CHF]", 0.0, step=100.0, value=0.0)
+
+optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
+debug_mode   = st.checkbox("Debug-Informationen anzeigen", value=False)
+
+if desired_income == 0: desired_income = None
+elif desired_income and desired_income > profit: desired_income = profit
 
 # ------------------------- Scenarios ---------------------------
 def scenario_salary_only():
     age_key = age_to_band(age_input)
-    # salary choice
     salary = profit if desired_income is None else min(profit, desired_income)
     ag = employer_costs(salary, age_key, fak=fak_rate, uvg=uvg_rate)
 
-    # taxable base using devbrains gross->net + manual deductions
     net_for_tax, an_parts = gross_to_net_for_tax(salary, pk_buyin)
     taxable_fed  = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
     taxable_cant = clamp_pos(net_for_tax + other_inc - cant_ded_manual)
 
     fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
-    base_cant, tax_cant, tax_city, tax_church, cant_grp, cant_tarif = canton_tax(
+    base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
         taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
     )
 
-    income_tax_total = fed_tax + tax_cant + tax_city + tax_church
+    income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
     net_owner = salary - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"]) - income_tax_total
 
     return {
@@ -312,8 +362,9 @@ def scenario_salary_only():
         "blocks": dict(
             ag=ag, an=an_parts,
             fed=fed_tax, fed_grp=fed_grp, fed_tarif=fed_tarif,
-            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church,
-            cant_grp=cant_grp, cant_tarif=cant_tarif
+            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church, personal=tax_pers,
+            cant_grp=cant_grp, cant_tarif=cant_tarif,
+            taxable_fed=taxable_fed, taxable_cant=taxable_cant
         )
     }
 
@@ -322,7 +373,6 @@ def scenario_dividend():
     qualifies = qualifies_partial(share_pct)
     inc_fed, inc_cant = incl_rates(qualifies)
 
-    # Lohn unter Strikt
     salary = min(min_salary, profit if desired_income is None else min(profit, desired_income))
     ag = employer_costs(salary, age_key, fak=fak_rate, uvg=uvg_rate)
 
@@ -336,11 +386,11 @@ def scenario_dividend():
     taxable_cant = clamp_pos(net_for_tax + dividend*inc_cant + other_inc - cant_ded_manual)
 
     fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
-    base_cant, tax_cant, tax_city, tax_church, cant_grp, cant_tarif = canton_tax(
+    base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
         taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
     )
 
-    income_tax_total = fed_tax + tax_cant + tax_city + tax_church
+    income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
     net_owner = (salary - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + dividend - income_tax_total
 
     return {
@@ -349,9 +399,10 @@ def scenario_dividend():
         "blocks": dict(
             ag=ag, an=an_parts,
             fed=fed_tax, fed_grp=fed_grp, fed_tarif=fed_tarif,
-            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church,
+            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church, personal=tax_pers,
             cant_grp=cant_grp, cant_tarif=cant_tarif,
-            inc_fed=inc_fed, inc_cant=inc_cant
+            inc_fed=inc_fed, inc_cant=inc_cant,
+            taxable_fed=taxable_fed, taxable_cant=taxable_cant
         )
     }
 
@@ -375,16 +426,28 @@ def optimize_mix(step=1_000.0):
         taxable_cant = clamp_pos(net_for_tax + div*inc_cant + other_inc - cant_ded_manual)
 
         fed_tax,_grp,_tf = federal_tax(taxable_fed, relationship, children)
-        base_cant, tax_cant, tax_city, tax_church, _cg, _ct = canton_tax(
+        base_cant, tax_cant, tax_city, tax_church, tax_pers, _cg, _ct = canton_tax(
             taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
         )
-        total = fed_tax + tax_cant + tax_city + tax_church
+        total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
         net = (s - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + div - total
         if (best is None) or (net>best["net"]):
             best=dict(salary=s, dividend=div, income_tax=total, net=net,
                       retained_after_tax=max(0.0, pool - div))
         s+=step
     return best
+
+# ------------------------- Chart helper ------------------------
+def tax_breakdown_chart(title:str, fed:float, kant:float, city:float, church:float, personal:float):
+    labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
+    values = [fed, kant, city, church, personal]
+    fig, ax = plt.subplots(figsize=(5.6, 2.8))
+    ax.barh(labels, values)
+    ax.set_title(title)
+    ax.set_xlabel("CHF")
+    for i, v in enumerate(values):
+        ax.text(v + (max(values)*0.01 if max(values)>0 else 100), i, f"{v:,.0f}", va="center")
+    st.pyplot(fig, clear_figure=True)
 
 # ------------------------- Run & render ------------------------
 if profit > 0:
@@ -397,15 +460,25 @@ if profit > 0:
     st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
     st.write(f"AN AHV/ALV/NBU/PK: CHF {(A['blocks']['an']['ahv']+A['blocks']['an']['alv']+A['blocks']['an']['nbu']+A['blocks']['an']['pk']):,.0f}")
     st.write(f"Einkommenssteuer **Bund**: CHF {A['blocks']['fed']:,.0f}")
-    st.write(f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | **Kirche**: CHF {A['blocks']['church']:,.0f}")
+    st.write(f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | **Kirche**: CHF {A['blocks']['church']:,.0f}  | **Personal**: CHF {A['blocks']['personal']:,.0f}")
     st.success(f"**Netto an Inhaber (heute):** CHF {A['net']:,.0f}")
+
+    tax_breakdown_chart(
+        "Steueraufteilung (Szenario A)",
+        A["blocks"]["fed"], A["blocks"]["cant"], A["blocks"]["city"], A["blocks"]["church"], A["blocks"]["personal"]
+    )
 
     st.subheader("Szenario B – Lohn + Dividende (Strikt)")
     st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
     st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
-    st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}")
+    st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
     st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
     st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
+
+    tax_breakdown_chart(
+        "Steueraufteilung (Szenario B)",
+        B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
+    )
 
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
@@ -426,18 +499,19 @@ if profit > 0:
         st.markdown("---")
         st.subheader("Debug-Informationen")
         st.write(f"Ort: {gemeinde_rec['BfsName']} ({canton_code}) | BFS: {BFS_ID} | CantonID: {CANT_ID}")
-        st.write(f"Tarif Bund Gruppe: {A['blocks']['fed_grp']} | Kanton Gruppe: {A['blocks']['cant_grp']}")
+        st.write(f"Taxable Bund: CHF {A['blocks']['taxable_fed']:,.0f} | Taxable Kanton: CHF {A['blocks']['taxable_cant']:,.0f}")
         st.write(f"Tariftypen: Bund {(A['blocks']['fed_tarif'] or {}).get('tableType')}, Kanton {(A['blocks']['cant_tarif'] or {}).get('tableType')}")
-        st.caption("Bund: −251 CHF pro Kind; Splitting gemäss Tariftabelle und Gruppe (Verheiratet / Ledig mit Kindern).")
+        if canton_code == "BL":
+            st.caption("BL FORMEL-Engine aktiv – Formel normalisiert (log/ln) und mit Splitting + Rundung ausgewertet.")
 
     with st.expander("Hinweise & Annahmen", expanded=False):
         st.markdown(
-            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.).\n"
-            "- **AHV/ALV/NBU/PK (AN):** 5.3% / 1.1% / 0.4% (bis 148’200) + PK-Einkauf.\n"
-            "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder und Tariftabelle.\n"
+            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) aus `factors/`.\n"
+            "- **AHV/ALV/NBU/PK (AN):** 5.3% / 1.1% / 0.4% (bis 148’200) + PK-Einkauf (frei).\n"
+            "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder und Tariftabelle (nur wenn zulässig).\n"
             "- **Bund:** zusätzlicher Kinderabzug −251 CHF/Kind auf der Bundessteuer.\n"
-            "- **BVG-Anzeige (AG/AN):** als Kostblöcke aufgeführt; für die Steuerbasis wird devbrains-Netto verwendet.\n"
-            "- **Abzüge:** solange der vollständige Abzugskatalog nicht portiert ist, stehen zwei manuelle Felder (Bund / Kanton) zur Verfügung."
+            "- **BVG-Anzeige (AG/AN):** als Kostblöcke aufgeführt; Steuerbasis nutzt devbrains-Netto.\n"
+            "- **Abzüge:** bis der vollständige Abzugskatalog portiert ist, stehen zwei manuelle Felder (Bund / Kanton) zur Verfügung."
         )
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
