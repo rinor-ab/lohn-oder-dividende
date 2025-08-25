@@ -265,6 +265,41 @@ def church_income_factor(confession:str, factor:dict)->float:
     if confession=="protestant":  return float(factor.get("IncomeRateProtestant") or 0.0)
     return 0.0  # none
 
+# --- Personalsteuer aus factors (robust, fallback wenn kein Tarif existiert)
+def _personal_tax_from_factor(factor: dict, base_tax: float, relationship: str) -> float:
+    if not factor:
+        return 0.0
+    heads = 2 if relationship in ("m", "rp") else 1  # pro erwachsene Person
+
+    # feste CHF-Gesamtfelder (häufigste Variante)
+    for k in ("PersonalTaxCHF", "PersonalCHF", "PersonalTax", "KopfsteuerCHF", "HeadTaxCHF", "HeadTax"):
+        v = factor.get(k)
+        if isinstance(v, (int, float)) and v:
+            return float(v) * heads
+
+    # mögliche Komponenten (Kanton + Gemeinde)
+    v_cant = factor.get("PersonalCantonCHF") or factor.get("PersonalTaxCantonCHF")
+    v_city = factor.get("PersonalCityCHF")   or factor.get("PersonalTaxCityCHF")
+    s = 0.0
+    for v in (v_cant, v_city):
+        try:
+            s += float(v or 0.0)
+        except Exception:
+            pass
+    if s > 0:
+        return s * heads
+
+    # selten: als Prozentsatz auf Basissteuer hinterlegt
+    rate = factor.get("PersonalRate") or factor.get("HeadTaxRate")
+    try:
+        if rate:
+            return base_tax * (float(rate) / 100.0) * heads
+    except Exception:
+        pass
+
+    return 0.0
+
+
 # ------------------------- Payroll & tax helpers ---------------
 def gross_to_net_for_tax(gross: float, pk: float)->tuple[float, dict]:
     """Devbrains gross->net used for the taxable income base (AN side only)."""
@@ -307,6 +342,8 @@ def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int, relationship:st
     # Optional: Personalsteuer if present as a separate tariff in some cantons
     pers_tarif, _ = pick_tarif(canton_id, "PERSONALSTEUER", groups)
     personal = eval_tariff_amount(pers_tarif, taxable_canton, grp) if pers_tarif else 0.0
+    if personal <= 0.0:
+        personal = _personal_tax_from_factor(factor, base, relationship)
 
     return base, canton, city, church, personal, grp, tarif
 
