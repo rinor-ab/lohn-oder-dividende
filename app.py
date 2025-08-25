@@ -588,27 +588,14 @@ if profit > 0:
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
 
-st.markdown("""
-<style>
-/* Hide global header & footer */
-header, footer {visibility: hidden !important; height: 0 !important;}
-
-/* Hide top-right decoration / toolbar / status widgets */
-div[data-testid="stDecoration"],
-div[data-testid="stToolbar"],
-div[data-testid="stStatusWidget"] {display:none !important;}
-
-/* Hide the bottom embed bar: "Built with Streamlit" + "Fullscreen" */
-a.viewerBadge_link, a.viewerBadge_link:hover,
-div[class*="viewerBadge_container"] {display:none !important;}
-
-/* Optional: remove any card-ish look around the main block */
-.appview-container .main .block-container{
-  padding-top: 1rem;           /* keep some breathing room */
-  padding-bottom: 1.5rem;
-  border: 0 !important;
-  box-shadow: none !important;
-  background: transparent !important;
-}
-</style>
-""", unsafe_allow_html=True)
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display: none;}
+    .stApp [data-testid="stToolbar"] {display: none;}
+    .viewerBadge_container__1QSob {display: none;}
+    .stActionButton {display: none;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
