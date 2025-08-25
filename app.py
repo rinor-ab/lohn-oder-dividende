@@ -14,31 +14,6 @@ import plotly.graph_objects as go
 
 import streamlit as st
 
-st.markdown("""
-<style>
-/* Flatten everything to white */
-html, body,
-[data-testid="stAppViewContainer"],
-.stApp, .main, .block-container {
-  background: #fff !important;
-}
-
-/* Kill any outer shadows/borders that can show as a grey line */
-[data-testid="stDecoration"] { display:none !important; }
-section[data-testid="stSidebar"] { box-shadow:none !important; }
-.block-container { box-shadow:none !important; border:0 !important; }
-
-/* Hide chrome we don't want in embeds */
-#MainMenu, header, footer { visibility:hidden; }
-[data-testid="stToolbar"]{ display:none !important; }
-div[class^="viewerBadge_container"]{ display:none !important; }
-button[title="View fullscreen"],
-[data-testid="stFullScreenButton"],
-div[aria-label="View fullscreen"]{ display:none !important; }
-</style>
-""", unsafe_allow_html=True)
-
-
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
 CANDIDATE_DATA_ROOTS = [
