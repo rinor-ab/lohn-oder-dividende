@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "year": 2024,
+  "unit": "CHF",
+  "rule_notes": {
+    "per_person": "Betrag pro erwachsene steuerpflichtige Person.",
+    "per_couple_one": "In ungetrennter Ehe/registrierter Partnerschaft wird nur eine Personalsteuer erhoben (Haushaltsteuer).",
+    "per_household": "Wie per_couple_one; historisch für manche Kantone so bezeichnet.",
+    "both": "Sowohl kantonale als auch kommunale Komponente vorhanden."
+  },
+  "data": {
+    "ZH": {
+      "has_personal_tax": true,
+      "level": "communal",
+      "amount": 24.0,
+      "obligatory": true,
+      "rule": "per_person"
+    },
+    "BE": {
+      "has_personal_tax": false
+    },
+    "LU": {
+      "has_personal_tax": true,
+      "level": "cantonal",
+      "amount": 50.0,
+      "obligatory": true,
+      "rule": "per_couple_one",
+      "revenue_split": {
+        "canton": 0.7,
+        "commune": 0.3
+      }
+    },
+    "UR": {
+      "has_personal_tax": true,
+      "level": "communal",
+      "amount": 70.0,
+      "obligatory": true,
+      "rule": "per_couple_one",
+      "church_head_tax": 30.0
+    },
+    "SZ": {
+      "has_personal_tax": false
+    },
+    "OW": {
+      "has_personal_tax": false
+    },
+    "NW": {
+      "has_personal_tax": true,
+      "level": "cantonal",
+      "amount": 50.0,
+      "obligatory": true,
+      "rule": "per_couple_one"
+    },
+    "GL": {
+      "has_personal_tax": false
+    },
+    "ZG": {
+      "has_personal_tax": false
+    },
+    "FR": {
+      "has_personal_tax": false
+    },
+    "SO": {
+      "has_personal_tax": true,
+      "level": "both",
+      "amount_canton": 30.0,
+      "commune_optional": {
+        "range": [
+          20.0,
+          50.0
+        ]
+      },
+      "obligatory": true,
+      "rule": "per_person"
+    },
+    "BS": {
+      "has_personal_tax": false
+    },
+    "BL": {
+      "has_personal_tax": false
+    },
+    "SH": {
+      "has_personal_tax": true,
+      "level": "both",
+      "amount_canton": 30.0,
+      "amount_commune": 30.0,
+      "obligatory": true,
+      "rule": "per_couple_one"
+    },
+    "AR": {
+      "has_personal_tax": false
+    },
+    "AI": {
+      "has_personal_tax": false
+    },
+    "SG": {
+      "has_personal_tax": false
+    },
+    "GR": {
+      "has_personal_tax": false
+    },
+    "AG": {
+      "has_personal_tax": false
+    },
+    "TG": {
+      "has_personal_tax": false
+    },
+    "TI": {
+      "has_personal_tax": true,
+      "level": "communal",
+      "amount": 40.0,
+      "obligatory": true,
+      "rule": "per_person"
+    },
+    "VD": {
+      "has_personal_tax": true,
+      "level": "communal",
+      "amount_max": 10.0,
+      "obligatory": false,
+      "rule": "per_person",
+      "spouse_reduction": 0.5
+    },
+    "VS": {
+      "has_personal_tax": true,
+      "level": "communal",
+      "amount_range": [
+        12.0,
+        24.0
+      ],
+      "obligatory": false,
+      "rule": "per_person"
+    },
+    "NE": {
+      "has_personal_tax": false
+    },
+    "GE": {
+      "has_personal_tax": true,
+      "level": "cantonal",
+      "amount": 25.0,
+      "obligatory": true,
+      "rule": "per_couple_one"
+    },
+    "JU": {
+      "has_personal_tax": false
+    }
+  }
+}
