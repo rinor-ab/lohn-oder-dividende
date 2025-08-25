@@ -16,22 +16,25 @@ import streamlit as st
 
 st.markdown("""
 <style>
-/* Hide Streamlit chrome */
-#MainMenu {visibility: hidden;}
-header {visibility: hidden;}
-footer {visibility: hidden;}
-[data-testid="stToolbar"] {display:none !important;}
+/* Flatten everything to white */
+html, body,
+[data-testid="stAppViewContainer"],
+.stApp, .main, .block-container {
+  background: #fff !important;
+}
 
-/* Hide the “Built with Streamlit” cloud badge (class names change over time) */
-div[class^="viewerBadge_container"] {display:none !important;}
-a[href^="https://streamlit.io"] {display:none !important;}
+/* Kill any outer shadows/borders that can show as a grey line */
+[data-testid="stDecoration"] { display:none !important; }
+section[data-testid="stSidebar"] { box-shadow:none !important; }
+.block-container { box-shadow:none !important; border:0 !important; }
 
-/* Hide the bottom-right “Fullscreen” overlay used in embeds */
+/* Hide chrome we don't want in embeds */
+#MainMenu, header, footer { visibility:hidden; }
+[data-testid="stToolbar"]{ display:none !important; }
+div[class^="viewerBadge_container"]{ display:none !important; }
 button[title="View fullscreen"],
 [data-testid="stFullScreenButton"],
-div[aria-label="View fullscreen"] {
-  display: none !important;
-}
+div[aria-label="View fullscreen"]{ display:none !important; }
 </style>
 """, unsafe_allow_html=True)
 
