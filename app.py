@@ -11,6 +11,31 @@ import streamlit as st
 import matplotlib.pyplot as plt  # (unused but left untouched)
 import plotly.graph_objects as go
 
+
+import streamlit as st
+
+st.markdown("""
+<style>
+/* Hide Streamlit chrome */
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stToolbar"] {display:none !important;}
+
+/* Hide the “Built with Streamlit” cloud badge (class names change over time) */
+div[class^="viewerBadge_container"] {display:none !important;}
+a[href^="https://streamlit.io"] {display:none !important;}
+
+/* Hide the bottom-right “Fullscreen” overlay used in embeds */
+button[title="View fullscreen"],
+[data-testid="stFullScreenButton"],
+div[aria-label="View fullscreen"] {
+  display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
 CANDIDATE_DATA_ROOTS = [
@@ -588,14 +613,3 @@ if profit > 0:
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
 
-hide_streamlit_style = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display: none;}
-    .stApp [data-testid="stToolbar"] {display: none;}
-    .viewerBadge_container__1QSob {display: none;}
-    .stActionButton {display: none;}
-    </style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
