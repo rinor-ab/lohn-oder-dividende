@@ -439,73 +439,71 @@ def optimize_mix(step=1_000.0):
     return best
 
 # ------------------------- Chart helper ------------------------
+import plotly.graph_objects as go
+
 def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
     labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
     values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
     total = sum(values)
 
-    # Respect Streamlit light/dark theme for subtle tweaks
+    # Light/dark mode aware
     try:
         is_dark = (st.get_option("theme.base") or "").lower() == "dark"
     except Exception:
         is_dark = False
 
-    # “Transaction partner” color accents (muted, professional)
-    palette = ["#0F766E",  # teal (Gemeinde vibe)
-               "#1D4ED8",  # indigo (Kanton)
-               "#0891B2",  # cyan (Bund)
-               "#F59E0B",  # amber (Kirche)
-               "#475569"]  # slate (Personal)
+    # Blue gradient palette (light → dark)
+    palette_light = ["#DBEAFE", "#93C5FD", "#60A5FA", "#3B82F6", "#1D4ED8"]
+    palette_dark  = ["#93C5FD", "#7EA6F7", "#6B8FEF", "#5979E6", "#4C6ED5"]
+    palette = palette_dark if is_dark else palette_light
 
-    # Percent-of-total labels (guard against 0 total)
+    # Percent of total
     pct = [(v / total * 100.0) if total > 0 else 0.0 for v in values]
     text_outside = [f"CHF {v:,.0f}  ({p:.1f}%)" if v > 0 else "" for v, p in zip(values, pct)]
 
-    fig = go.Figure(
-        go.Bar(
-            x=values,
-            y=labels,
-            orientation="h",
-            text=text_outside,
-            textposition="outside",
-            marker=dict(
-                color=palette,
-                line=dict(width=0)
-            ),
-            hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
-            customdata=pct,
-            selected=dict(marker=dict(opacity=0.95)),
-            unselected=dict(marker=dict(opacity=0.45)),
-        )
-    )
+    # Horizontal bar chart
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=labels,
+        orientation="h",
+        text=text_outside,
+        textposition="outside",
+        marker=dict(color=palette, line=dict(width=0)),
+        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
+        customdata=pct,
+    ))
 
-    # Layout polish
+    # Layout: minimal, clean
     fig.update_layout(
         title=title,
         template="plotly_dark" if is_dark else "plotly_white",
-        height=320,
-        margin=dict(l=80, r=20, t=60, b=20),
+        height=300,
+        bargap=0.45,
+        margin=dict(l=80, r=20, t=50, b=10),
         xaxis_title="CHF",
-        yaxis=dict(categoryorder="array", categoryarray=labels),  # keep order
+        yaxis=dict(categoryorder="array", categoryarray=labels),
         showlegend=False,
-        hoverlabel=dict(namelength=-1),
-        clickmode="event+select",
+        hoverlabel=dict(namelength=-1, font=dict(size=12)),
+        font=dict(size=12),
     )
-    # Slightly nicer x grid for readability
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="rgba(148,163,184,0.3)" if not is_dark else "rgba(148,163,184,0.25)")
+
+    # Subtle grid only on x-axis
+    fig.update_xaxes(
+        showgrid=True, gridwidth=1,
+        gridcolor="rgba(148,163,184,0.25)" if is_dark else "rgba(148,163,184,0.35)",
+        zeroline=False, showline=False, ticks=""
+    )
+    fig.update_yaxes(showgrid=False, zeroline=False, showline=False, ticks="")
 
     # Total annotation
     if total > 0:
         fig.add_annotation(
-            x=total, y=-0.6,  # place above bars
+            x=total, y=-0.6,
             text=f"<b>Total Steuern:</b> CHF {total:,.0f}",
-            showarrow=False,
-            font=dict(size=12),
-            xanchor="right"
+            showarrow=False, font=dict(size=12), xanchor="right"
         )
 
     st.plotly_chart(fig, use_container_width=True, theme=None)
-
 # ------------------------- Run & render ------------------------
 if profit > 0:
     A = scenario_salary_only()
