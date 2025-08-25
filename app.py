@@ -33,6 +33,7 @@ if YEAR_ROOT is None:
 # ------------------------- Constants --------------------------
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
+BAR_COLOR = "#af966d"
 
 # devbrains gross->net for *income tax* base (AN-Seite)
 AHV_IV_EO = 0.053
@@ -536,16 +537,12 @@ def optimize_mix(step=1_000.0):
         s+=step
     return best
 
-# ------------------------- Chart helper ------------------------
+# -------------------------  helper ------------------------
 def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
     labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
     values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
     total = sum(values)
 
-    # Blue gradient palette (light → dark)
-    palette = ["#DBEAFE", "#93C5FD", "#60A5FA", "#3B82F6", "#1D4ED8"]
-
-    # % of total + outside labels
     pct = [(v / total * 100.0) if total > 0 else 0.0 for v in values]
     text_outside = [f"CHF {v:,.0f}  ({p:.1f}%)" if v > 0 else "" for v, p in zip(values, pct)]
 
@@ -555,12 +552,11 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
         orientation="h",
         text=text_outside,
         textposition="outside",
-        marker=dict(color=palette, line=dict(width=0)),
+        marker=dict(color=BAR_COLOR, line=dict(width=0)),   # <- single brand color
         hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
         customdata=pct,
     ))
 
-    # Minimal layout, NO background, NO grid
     fig.update_layout(
         title=title,
         template=None,
@@ -568,7 +564,7 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
         paper_bgcolor="rgba(0,0,0,0)",
         height=300,
         bargap=0.45,
-        margin=dict(l=80, r=20, t=50, b=10),
+        margin=dict(l=80, r=20, t=52, b=12),  # ~2px extra padding top/bottom for mobile
         xaxis_title="CHF",
         yaxis=dict(categoryorder="array", categoryarray=labels),
         showlegend=False,
