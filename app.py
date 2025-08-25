@@ -1,4 +1,4 @@
-# app.py — Lohn vs. Dividende (devbrains 2025; deductions fixed; federal included; strict mapping)
+# app.py — Lohn vs. Dividende (devbrains 2025; strict deduction scoping; federal insurance cap; robust UI)
 import json, pathlib
 import streamlit as st
 from functools import lru_cache
@@ -120,10 +120,18 @@ def factors_for_bfs(canton_id: int, bfs_id: int):
     return {"IncomeRateCanton":100.0,"IncomeRateCity":0.0,"ProfitTaxRateCanton":100.0,"ProfitTaxRateCity":0.0}
 
 # ================= Deductions engine ==================
+def _norm_scope(scope: str) -> str:
+    s = (scope or "").lower()
+    if "bund" in s: return "BUND"
+    if "kant" in s or "canton" in s or "cant" in s: return "KANTON"
+    if "gemein" in s or "city" in s or "commune" in s or "municip" in s:
+        return "KANTON"  # we aggregate canton+commune together
+    return (scope or "KANTON").upper()
+
 def flatten_deduction_items(groups):
     out = []
     for g in groups:
-        tgt = g.get("target","")
+        tgt = _norm_scope(g.get("target",""))
         for it in (g.get("items") or []):
             out.append((tgt, it))
     return out
@@ -181,40 +189,38 @@ def _match_item_keywords(items, *keywords):
     if not items: return None
     groups = []
     for k in keywords:
-        if isinstance(k, (list, tuple)):
-            groups.append([_norm_text(x) for x in k])
-        else:
-            groups.append([_norm_text(k)])
+        groups.append([_norm_text(x) for x in ([k] if isinstance(k, str) else k)])
     for scope, it in items:
         hay = f"{_norm_text(it.get('name'))} {_norm_text(it.get('id'))}"
-        ok = True
-        for group in groups:
-            if not any(x in hay for x in group):
-                ok = False; break
-        if ok: return (scope, it)
+        if all(any(word in hay for word in grp) for grp in groups):
+            return (scope, it)
     return None
 
 def pick_curated_items(bund_groups, kant_groups):
     B = flatten_deduction_items(bund_groups)
     K = flatten_deduction_items(kant_groups)
 
-    def first(*kws, exact=None):
-        if exact:
-            return _match_item_exact(K, exact) or _match_item_exact(B, exact)
+    def first_bund_only(*kws, exact=None):
+        if exact: return _match_item_exact(B, exact)
+        return _match_item_keywords(B, *kws)
+
+    def first_any(*kws, exact=None):
+        if exact: return _match_item_exact(K, exact) or _match_item_exact(B, exact)
         return _match_item_keywords(K, *kws) or _match_item_keywords(B, *kws)
 
-    # strict mapping (prevents grabbing generic mega-allowances)
+    # STRICT: insurance only from **Bund** (AG: capped 1'800; canton = 0)
     curated = {
-        "vers":      first(exact="versicherungsprämien und zinsen von sparkapitalien") or first("versicherungsprämien", ["sparkapital","spar"]),
-        "s3a":       first(exact="säule 3a") or first(["säule 3a","saeule 3a","3a"]),
-        "verp":      first(exact="verpflegungskosten") or first("verpflegung"),
-        "fahr":      first(exact="fahrkosten") or first("fahrkosten"),
-        "beruf":     first(exact="berufsauslagen") or first("berufsauslagen"),
-        "beruf_neb": first(exact="berufsauslagen nebenerwerb") or first("berufsauslagen","neben"),
-        "uebrige":   first(exact="übrige abzüge"),
-        "schuld":    first(exact="schuldzinsen") or first("schuldzinsen"),
-        "unterhalt": first(exact="unterhaltskosten für liegenschaften") or first(["unterhalt","unterhalts"], "liegenschaft"),
-        "uebrige_w": None,  # avoid duplicates across cantons
+        "vers":      first_bund_only(exact="versicherungsprämien und zinsen von sparkapitalien") \
+                     or first_bund_only("versicherungsprämien", ["sparkapital","spar"]),
+        "s3a":       first_any(exact="säule 3a") or first_any(["säule 3a","saeule 3a","3a"]),
+        "verp":      first_any(exact="verpflegungskosten") or first_any("verpflegung"),
+        "fahr":      first_any(exact="fahrkosten") or first_any("fahrkosten"),
+        "beruf":     first_any(exact="berufsauslagen") or first_any("berufsauslagen"),
+        "beruf_neb": first_any(exact="berufsauslagen nebenerwerb") or first_any("berufsauslagen","neben"),
+        "uebrige":   first_any(exact="übrige abzüge"),
+        "schuld":    first_any(exact="schuldzinsen") or first_any("schuldzinsen"),
+        "unterhalt": first_any(exact="unterhaltskosten für liegenschaften") or first_any(["unterhalt","unterhalts"], "liegenschaft"),
+        "uebrige_w": None,  # avoid duplicates
     }
     return curated, B, K
 
@@ -358,6 +364,7 @@ def apply_curated_deductions(base_fed, base_cant):
         if not tup:
             continue
         scope, item = tup
+        scope = _norm_scope(scope)  # normalize again just in case
         iid = str(item.get("id",""))
 
         if key == "beruf":
@@ -376,7 +383,7 @@ def apply_curated_deductions(base_fed, base_cant):
 
         ui_map[f"{scope}:{iid}"] = amt
 
-        if (scope or "").upper() == "BUND":
+        if scope == "BUND":
             bund_items.append((scope, item))
         else:
             kant_items.append((scope, item))
@@ -406,7 +413,7 @@ def scenario_salary_only(profit, desired, canton_id, bfs_id, age_key, ahv_on, ot
     corp_rate = corporate_tax_rate(canton_id, bfs_id)
     corp_tax_amt = rest * corp_rate
 
-    # IMPORTANT: Devbrains-style base — do NOT subtract AN social contributions here
+    # Devbrains-style base — employee social contributions are NOT auto-subtracted here
     base_fed  = clamp(salary + other - pk_buy)
     base_cant = clamp(salary + other - pk_buy)
 
@@ -443,7 +450,7 @@ def scenario_dividend(profit, desired, canton_id, bfs_id, age_key, ahv_on, other
     inc_fed  = DIV_PARTIAL_FED  if qualifies else 1.0
     inc_cant = DIV_PARTIAL_CANT if qualifies else 1.0
 
-    taxable_salary = salary  # do NOT subtract AN here; handled via deductions engine
+    taxable_salary = salary
     base_fed  = clamp(taxable_salary + dividend*inc_fed  + other - pk_buy)
     base_cant = clamp(taxable_salary + dividend*inc_cant + other - pk_buy)
 
