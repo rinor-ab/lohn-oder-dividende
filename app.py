@@ -446,22 +446,13 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
     values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
     total = sum(values)
 
-    # Light/dark mode aware
-    try:
-        is_dark = (st.get_option("theme.base") or "").lower() == "dark"
-    except Exception:
-        is_dark = False
-
     # Blue gradient palette (light → dark)
-    palette_light = ["#DBEAFE", "#93C5FD", "#60A5FA", "#3B82F6", "#1D4ED8"]
-    palette_dark  = ["#93C5FD", "#7EA6F7", "#6B8FEF", "#5979E6", "#4C6ED5"]
-    palette = palette_dark if is_dark else palette_light
+    palette = ["#DBEAFE", "#93C5FD", "#60A5FA", "#3B82F6", "#1D4ED8"]
 
-    # Percent of total
+    # % of total + outside labels
     pct = [(v / total * 100.0) if total > 0 else 0.0 for v in values]
     text_outside = [f"CHF {v:,.0f}  ({p:.1f}%)" if v > 0 else "" for v, p in zip(values, pct)]
 
-    # Horizontal bar chart
     fig = go.Figure(go.Bar(
         x=values,
         y=labels,
@@ -473,10 +464,12 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
         customdata=pct,
     ))
 
-    # Layout: minimal, clean
+    # Minimal layout, NO background, NO grid
     fig.update_layout(
         title=title,
-        template="plotly_dark" if is_dark else "plotly_white",
+        template=None,                              # <- no theme background
+        plot_bgcolor="rgba(0,0,0,0)",               # <- transparent plot area
+        paper_bgcolor="rgba(0,0,0,0)",              # <- transparent outer area
         height=300,
         bargap=0.45,
         margin=dict(l=80, r=20, t=50, b=10),
@@ -486,16 +479,9 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
         hoverlabel=dict(namelength=-1, font=dict(size=12)),
         font=dict(size=12),
     )
-
-    # Subtle grid only on x-axis
-    fig.update_xaxes(
-        showgrid=True, gridwidth=1,
-        gridcolor="rgba(148,163,184,0.25)" if is_dark else "rgba(148,163,184,0.35)",
-        zeroline=False, showline=False, ticks=""
-    )
+    fig.update_xaxes(showgrid=False, zeroline=False, showline=False, ticks="")
     fig.update_yaxes(showgrid=False, zeroline=False, showline=False, ticks="")
 
-    # Total annotation
     if total > 0:
         fig.add_annotation(
             x=total, y=-0.6,
