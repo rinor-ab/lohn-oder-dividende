@@ -334,10 +334,10 @@ CANT_ID  = int(gemeinde_rec["CantonID"])
 col1, col2 = st.columns(2)
 with col1:
     profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
-    desired_income = st.number_input("Gewünschte **Gesamtauszahlung** an Inhaber [CHF] (optional)", 0.0, step=10_000.0)
+    desired_income = st.number_input("Zielauszahlung [CHF] (optional)", 0.0, step=10_000.0)
 with col2:
     other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
-    age_input      = st.number_input("Alter \n (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
+    age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
 
 with st.expander("ANNAHMEN", expanded=True):
     st.subheader("Annahmen")
