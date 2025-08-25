@@ -580,7 +580,7 @@ if profit > 0:
       )
     st.divider()
     with st.container(border=True):
-      st.subheader("Szenario B – Lohn + Dividende (Strikt)")
+      st.subheader("Szenario B – Lohn + Dividende")
       st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
       st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
       st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
