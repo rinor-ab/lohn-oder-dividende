@@ -589,32 +589,33 @@ def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church
 if profit > 0:
     A = scenario_salary_only()
     B = scenario_dividend()
+    with st.container(border=True):
+      st.subheader("Szenario A – 100% Lohn")
+      st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
+      st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
+      st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
+      st.write(f"AN AHV/ALV/NBU/PK: CHF {(A['blocks']['an']['ahv']+A['blocks']['an']['alv']+A['blocks']['an']['nbu']+A['blocks']['an']['pk']):,.0f}")
+      st.write(f"Einkommenssteuer **Bund**: CHF {A['blocks']['fed']:,.0f}")
+      st.write(f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | **Kirche**: CHF {A['blocks']['church']:,.0f}  | **Personal**: CHF {A['blocks']['personal']:,.0f}")
+      st.success(f"**Netto an Inhaber (heute):** CHF {A['net']:,.0f}")
 
-    st.subheader("Szenario A – 100% Lohn")
-    st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
-    st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
-    st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
-    st.write(f"AN AHV/ALV/NBU/PK: CHF {(A['blocks']['an']['ahv']+A['blocks']['an']['alv']+A['blocks']['an']['nbu']+A['blocks']['an']['pk']):,.0f}")
-    st.write(f"Einkommenssteuer **Bund**: CHF {A['blocks']['fed']:,.0f}")
-    st.write(f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | **Kirche**: CHF {A['blocks']['church']:,.0f}  | **Personal**: CHF {A['blocks']['personal']:,.0f}")
-    st.success(f"**Netto an Inhaber (heute):** CHF {A['net']:,.0f}")
-
-    tax_breakdown_chart(
-        "Steueraufteilung (Szenario A)",
-        A["blocks"]["fed"], A["blocks"]["cant"], A["blocks"]["city"], A["blocks"]["church"], A["blocks"]["personal"]
-    )
-
-    st.subheader("Szenario B – Lohn + Dividende (Strikt)")
-    st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
-    st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
-    st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
-    st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
-    st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
-
-    tax_breakdown_chart(
-        "Steueraufteilung (Szenario B)",
-        B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
-    )
+      tax_breakdown_chart(
+          "Steueraufteilung (Szenario A)",
+          A["blocks"]["fed"], A["blocks"]["cant"], A["blocks"]["city"], A["blocks"]["church"], A["blocks"]["personal"]
+      )
+    st.divider()
+    with st.container(border=True):
+      st.subheader("Szenario B – Lohn + Dividende (Strikt)")
+      st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
+      st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
+      st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
+      st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
+      st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
+  
+      tax_breakdown_chart(
+          "Steueraufteilung (Szenario B)",
+          B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
+      )
 
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
