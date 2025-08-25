@@ -265,39 +265,54 @@ def church_income_factor(confession:str, factor:dict)->float:
     if confession=="protestant":  return float(factor.get("IncomeRateProtestant") or 0.0)
     return 0.0  # none
 
-# --- Personalsteuer aus factors (robust, fallback wenn kein Tarif existiert)
-def _personal_tax_from_factor(factor: dict, base_tax: float, relationship: str) -> float:
-    if not factor:
+# --- Personalsteuer JSON loader (canton code -> spec)
+@st.cache_data(show_spinner=False)
+def load_personal_tax_json():
+    # look in app folder, data folders, and /mnt/data
+    for base in [APP_DIR, YEAR_ROOT, APP_DIR / "data", pathlib.Path("/mnt/data")]:
+        if not base:
+            continue
+        for fp in base.glob("personalsteuer_*.json"):
+            try:
+                with fp.open("r", encoding="utf-8") as f:
+                    js = json.load(f)
+                    data = js.get("data") or {}
+                    if isinstance(data, dict) and data:
+                        return data
+            except Exception:
+                pass
+    return {}
+
+def _personal_tax_from_json(canton_code: str, relationship: str) -> float:
+    """Compute Personal-/Kopfsteuer from JSON spec for the given canton code."""
+    spec = load_personal_tax_json().get(canton_code)
+    if not spec or not spec.get("has_personal_tax"):
         return 0.0
-    heads = 2 if relationship in ("m", "rp") else 1  # pro erwachsene Person
 
-    # feste CHF-Gesamtfelder (häufigste Variante)
-    for k in ("PersonalTaxCHF", "PersonalCHF", "PersonalTax", "KopfsteuerCHF", "HeadTaxCHF", "HeadTax"):
-        v = factor.get(k)
-        if isinstance(v, (int, float)) and v:
-            return float(v) * heads
+    # base amount for one person (sum canton+commune if 'both')
+    amt = 0.0
+    if "amount" in spec:
+        amt = float(spec["amount"] or 0.0)
+    else:
+        if spec.get("level") == "both":
+            amt += float(spec.get("amount_canton") or 0.0)
+            if "amount_commune" in spec:
+                amt += float(spec["amount_commune"] or 0.0)
+            elif isinstance(spec.get("commune_optional"), dict):
+                rng = spec["commune_optional"].get("range")
+                if isinstance(rng, (list, tuple)) and len(rng) == 2:
+                    # use the upper bound as default (matches your “SO = 50 CHF” expectation)
+                    amt += float(rng[1] or 0.0)
 
-    # mögliche Komponenten (Kanton + Gemeinde)
-    v_cant = factor.get("PersonalCantonCHF") or factor.get("PersonalTaxCantonCHF")
-    v_city = factor.get("PersonalCityCHF")   or factor.get("PersonalTaxCityCHF")
-    s = 0.0
-    for v in (v_cant, v_city):
-        try:
-            s += float(v or 0.0)
-        except Exception:
-            pass
-    if s > 0:
-        return s * heads
+    # heads: 2 if verheiratet/partnerschaft
+    heads = 2 if relationship in ("m", "rp") else 1
 
-    # selten: als Prozentsatz auf Basissteuer hinterlegt
-    rate = factor.get("PersonalRate") or factor.get("HeadTaxRate")
-    try:
-        if rate:
-            return base_tax * (float(rate) / 100.0) * heads
-    except Exception:
-        pass
-
-    return 0.0
+    # rule: per_person vs per_couple_one
+    rule = spec.get("rule", "per_person")
+    if rule == "per_couple_one":
+        return amt * (1 if heads == 2 else 1)  # one per Haushalt/Ehepaar
+    # default: per_person
+    return amt * heads
 
 
 # ------------------------- Payroll & tax helpers ---------------
@@ -330,7 +345,9 @@ def incl_rates(qualifies: bool, canton_code: str):
     inc_cant = float(mapping.get(canton_code, 0.70))
     return inc_fed, inc_cant
 
-def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int, relationship:str, children:int, confession:str):
+def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int,
+               relationship:str, children:int, confession:str,
+               canton_code_str: str | None = None):
     groups = groups_for_relationship(relationship, children)
     tarif, grp = pick_tarif(canton_id, "EINKOMMENSSTEUER", groups)
     base = eval_tariff_amount(tarif, taxable_canton, grp)
@@ -339,11 +356,21 @@ def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int, relationship:st
     city   = base * ((factor.get("IncomeRateCity",0.0) or 0.0)/100.0)   if factor else 0.0
     church = base * (church_income_factor(confession, factor)/100.0)     if factor else 0.0
 
-    # Optional: Personalsteuer if present as a separate tariff in some cantons
+        # Personal-/Kopfsteuer: Tarif -> factors -> JSON fallback
     pers_tarif, _ = pick_tarif(canton_id, "PERSONALSTEUER", groups)
     personal = eval_tariff_amount(pers_tarif, taxable_canton, grp) if pers_tarif else 0.0
+
     if personal <= 0.0:
-        personal = _personal_tax_from_factor(factor, base, relationship)
+        # (if your dataset ever carries a CHF value in factors)
+        try:
+            personal = _personal_tax_from_factor(factor, base, relationship)
+        except NameError:
+            # helper not present; ignore
+            personal = 0.0 if personal is None else personal
+
+    if personal <= 0.0 and canton_code_str:
+        personal = _personal_tax_from_json(canton_code_str, relationship)
+
 
     return base, canton, city, church, personal, grp, tarif
 
@@ -420,7 +447,7 @@ def scenario_salary_only():
 
     fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
     base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
-        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
+        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
     )
 
     income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
@@ -458,7 +485,7 @@ def scenario_dividend():
 
     fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
     base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
-        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
+        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
     )
 
     income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
@@ -499,7 +526,7 @@ def optimize_mix(step=1_000.0):
 
         fed_tax,_grp,_tf = federal_tax(taxable_fed, relationship, children)
         base_cant, tax_cant, tax_city, tax_church, tax_pers, _cg, _ct = canton_tax(
-            taxable_cant, CANT_ID, BFS_ID, relationship, children, confession
+            taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
         )
         total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
         net = (s - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + div - total
