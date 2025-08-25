@@ -8,6 +8,7 @@
 import json, math, pathlib, re
 import streamlit as st
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
@@ -438,16 +439,72 @@ def optimize_mix(step=1_000.0):
     return best
 
 # ------------------------- Chart helper ------------------------
-def tax_breakdown_chart(title:str, fed:float, kant:float, city:float, church:float, personal:float):
+def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
     labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
-    values = [fed, kant, city, church, personal]
-    fig, ax = plt.subplots(figsize=(5.6, 2.8))
-    ax.barh(labels, values)
-    ax.set_title(title)
-    ax.set_xlabel("CHF")
-    for i, v in enumerate(values):
-        ax.text(v + (max(values)*0.01 if max(values)>0 else 100), i, f"{v:,.0f}", va="center")
-    st.pyplot(fig, clear_figure=True)
+    values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
+    total = sum(values)
+
+    # Respect Streamlit light/dark theme for subtle tweaks
+    try:
+        is_dark = (st.get_option("theme.base") or "").lower() == "dark"
+    except Exception:
+        is_dark = False
+
+    # “Transaction partner” color accents (muted, professional)
+    palette = ["#0F766E",  # teal (Gemeinde vibe)
+               "#1D4ED8",  # indigo (Kanton)
+               "#0891B2",  # cyan (Bund)
+               "#F59E0B",  # amber (Kirche)
+               "#475569"]  # slate (Personal)
+
+    # Percent-of-total labels (guard against 0 total)
+    pct = [(v / total * 100.0) if total > 0 else 0.0 for v in values]
+    text_outside = [f"CHF {v:,.0f}  ({p:.1f}%)" if v > 0 else "" for v, p in zip(values, pct)]
+
+    fig = go.Figure(
+        go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
+            text=text_outside,
+            textposition="outside",
+            marker=dict(
+                color=palette,
+                line=dict(width=0)
+            ),
+            hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
+            customdata=pct,
+            selected=dict(marker=dict(opacity=0.95)),
+            unselected=dict(marker=dict(opacity=0.45)),
+        )
+    )
+
+    # Layout polish
+    fig.update_layout(
+        title=title,
+        template="plotly_dark" if is_dark else "plotly_white",
+        height=320,
+        margin=dict(l=80, r=20, t=60, b=20),
+        xaxis_title="CHF",
+        yaxis=dict(categoryorder="array", categoryarray=labels),  # keep order
+        showlegend=False,
+        hoverlabel=dict(namelength=-1),
+        clickmode="event+select",
+    )
+    # Slightly nicer x grid for readability
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="rgba(148,163,184,0.3)" if not is_dark else "rgba(148,163,184,0.25)")
+
+    # Total annotation
+    if total > 0:
+        fig.add_annotation(
+            x=total, y=-0.6,  # place above bars
+            text=f"<b>Total Steuern:</b> CHF {total:,.0f}",
+            showarrow=False,
+            font=dict(size=12),
+            xanchor="right"
+        )
+
+    st.plotly_chart(fig, use_container_width=True, theme=None)
 
 # ------------------------- Run & render ------------------------
 if profit > 0:
