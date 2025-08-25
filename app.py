@@ -585,7 +585,7 @@ if profit > 0:
             "- **AHV/ALV/NBU/PK (AN):** 5.3% / 1.1% / 0.4% (bis 148’200) + PK-Einkauf (frei).\n"
             "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder und Tariftabelle (nur wenn zulässig).\n"
             "- **Bund:** zusätzlicher Kinderabzug −251 CHF/Kind auf der Bundessteuer.\n"
-            "- **BVG-Anzeige (AG/AN):** als Kostblöcke aufgeführt; Steuerbasis nutzt devbrains-Netto.\n"
+            "- **BVG-Anzeige (AG/AN):** als Kostblöcke aufgeführt.\n"
             "- **Abzüge:** bis der vollständige Abzugskatalog portiert ist, stehen zwei manuelle Felder (Bund / Kanton) zur Verfügung."
         )
 else:
