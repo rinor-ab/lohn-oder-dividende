@@ -17,98 +17,66 @@ st.set_page_config(page_title="Lohn vs. Dividende", layout="wide")
 
 # ======= BRAND THEME (edit only the variables in :root) =======
 st.markdown("""
+<!-- Keep Streamlit's icon fonts -->
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
 <style>
-/* 1) Brand variables – set these once to match your website */
 :root{
-  --tp-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-  --tp-primary: #0A3C7D;        /* buttons/active states */
-  --tp-text:    #1A1A1A;        /* body text */
-  --tp-muted:   #475569;        /* secondary text */
-  --tp-bg:      #FFFFFF;        /* page background */
-  --tp-card:    #F6F7F9;        /* panels, expanders */
-  --tp-border:  #E5E7EB;        /* lines, input borders */
-  --tp-radius:  12px;           /* global radius */
-  --tp-shadow:  0 2px 14px rgba(16,24,40,.06);
+  --tp-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+  --tp-primary:#0A3C7D; --tp-text:#1A1A1A; --tp-muted:#475569;
+  --tp-bg:#FFFFFF; --tp-card:#F6F7F9; --tp-border:#E5E7EB;
+  --tp-radius:12px; --tp-shadow:0 2px 14px rgba(16,24,40,.06);
 }
 
-/* If your site uses a webfont, load it here (swap with your font): */
-/*@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');*/
-
-/* 2) Global page + container */
-html, body, [data-testid="stAppViewContainer"], .stApp { background: var(--tp-bg) !important; color: var(--tp-text); }
-.block-container { max-width: 1200px; padding-top: 24px; padding-bottom: 64px; }
-*, *:before, *:after { font-family: var(--tp-font) !important; }
-
-/* 3) Headings */
-h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3{
-  letter-spacing: -.01em;
-}
-h1, .stMarkdown h1{ font-weight: 700; font-size: 34px; margin: 8px 0 12px; }
-h2, .stMarkdown h2{ font-weight: 600; font-size: 22px; margin: 20px 0 8px; }
-h3, .stMarkdown h3{ font-weight: 600; font-size: 18px; margin: 16px 0 6px; }
-
-/* 4) Cards / expanders / containers */
-[data-testid="stExpander"] > details{
-  background: var(--tp-card) !important;
-  border: 1px solid var(--tp-border) !important;
-  border-radius: var(--tp-radius) !important;
-  box-shadow: var(--tp-shadow);
-}
-[data-testid="stExpander"] summary{
+/* ❌ DO NOT override fonts on everything */
+/* Only set fonts on content elements */
+body, .stApp, .block-container,
+.stMarkdown, .stText, .stButton button,
+input, textarea, select, label, [data-baseweb]{
+  font-family: var(--tp-font) !important;
   color: var(--tp-text);
-  font-weight: 600;
 }
 
-/* 5) Inputs (selects, text, number) */
+/* ✅ Ensure icon ligatures render correctly */
+.material-icons, .material-icons-round, .katex, [class*="material-icons"]{
+  font-family: 'Material Icons Round' !important;
+  font-weight: normal; font-style: normal; font-size: 24px;
+  line-height: 1; letter-spacing: normal; text-transform: none;
+  display: inline-block; white-space: nowrap; word-wrap: normal;
+  direction: ltr; -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Layout + components (same as before, trimmed) */
+html, body, [data-testid="stAppViewContainer"]{ background:var(--tp-bg) !important; }
+.block-container{ max-width:1200px; padding-top:24px; padding-bottom:64px; }
+h1{ font-weight:700; font-size:34px; margin:8px 0 12px; letter-spacing:-.01em; }
+h2{ font-weight:600; font-size:22px; margin:20px 0 8px; }
+
+[data-testid="stExpander"] > details{
+  background:var(--tp-card)!important; border:1px solid var(--tp-border)!important;
+  border-radius:var(--tp-radius)!important; box-shadow:var(--tp-shadow);
+}
+[data-testid="stExpander"] summary{ font-weight:600; }
+
 div[data-baseweb="select"] > div, input, textarea{
-  border-radius: var(--tp-radius) !important;
-  border: 1px solid var(--tp-border) !important;
-  background: #fff !important;
-  box-shadow: none !important;
+  border-radius:var(--tp-radius)!important; border:1px solid var(--tp-border)!important; background:#fff!important;
 }
-div[data-baseweb="select"]:focus-within > div,
-input:focus, textarea:focus{
-  border-color: var(--tp-primary) !important;
-  box-shadow: 0 0 0 3px rgba(10,60,125,.12) !important;
+div[data-baseweb="select"]:focus-within > div, input:focus, textarea:focus{
+  border-color:var(--tp-primary)!important; box-shadow:0 0 0 3px rgba(10,60,125,.12)!important;
 }
 
-/* 6) Buttons */
 .stButton > button{
-  background: var(--tp-primary) !important;
-  color: #fff !important;
-  border: 1px solid var(--tp-primary) !important;
-  border-radius: var(--tp-radius) !important;
-  padding: 10px 14px;
-  font-weight: 600;
-  box-shadow: var(--tp-shadow);
-}
-.stButton > button:hover{ filter: brightness(1.05); }
-
-/* Secondary/outline buttons */
-button[kind="secondary"]{
-  background: #fff !important;
-  color: var(--tp-primary) !important;
-  border: 1px solid var(--tp-primary) !important;
+  background:var(--tp-primary)!important; color:#fff!important; border:1px solid var(--tp-primary)!important;
+  border-radius:var(--tp-radius)!important; padding:10px 14px; font-weight:600; box-shadow:var(--tp-shadow);
 }
 
-/* 7) Sliders, toggles, progress */
-.css-17lntkn, .stSlider [role="slider"]{ background: var(--tp-primary) !important; }
-
-/* 8) Tables/metrics */
-[data-testid="stMetricValue"]{ font-weight: 700; }
-table { border-radius: var(--tp-radius); overflow: hidden; }
-
-/* 9) Remove Streamlit chrome we don’t want in embed */
-#MainMenu, header, footer { visibility: hidden; }
-[data-testid="stToolbar"]{ display:none !important; }
-div[class^="viewerBadge_container"]{ display:none !important; }
-button[title="View fullscreen"], [data-testid="stFullScreenButton"], div[aria-label="View fullscreen"]{ display:none !important; }
-
-/* 10) Subtle separators that match your site */
-hr{ border: 0; height: 1px; background: var(--tp-border); }
-
-/* 11) Fix the faint outer line seen in embeds */
-[data-testid="stDecoration"]{ display:none !important; }
+/* Hide embed chrome */
+#MainMenu, header, footer{ visibility:hidden; }
+[data-testid="stToolbar"], div[class^="viewerBadge_container"]{ display:none!important; }
+button[title="View fullscreen"], [data-testid="stFullScreenButton"], div[aria-label="View fullscreen"]{ display:none!important; }
+[data-testid="stDecoration"]{ display:none!important; }
 </style>
 """, unsafe_allow_html=True)
 
