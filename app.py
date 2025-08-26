@@ -700,7 +700,7 @@ if profit > 0:
 
     if optimizer_on:
         st.markdown("---")
-        st.subheader("Optimierer – beste Mischung (Strikt)")
+        st.subheader("Optimierer – beste Mischung")
         best = optimize_mix()
         st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
         st.write(f"Einkommenssteuer gesamt: CHF {best['income_tax']:,.0f}")
