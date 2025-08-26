@@ -730,7 +730,7 @@ if profit > 0:
             "• `steuerbar_fed = AN-Netto + inc_fed·Div + weitere − Abzug_Bund`  \n"
             "• `steuerbar_kant = AN-Netto + inc_cant·Div + weitere − Abzug_Kanton`  \n\n"
             "**3) Tarifierung**  \n"
-            "- Bundes-/Kantonstarife (ZÜRICH/BUND/FREIBURG/FLATTAX/FORMEL) mit **Splitting** je nach Gruppe.  \n"
+            "- Bundes-/Kantonstarife mit **Splitting** je nach Gruppe.  \n"
             "- Bemessungsgrundlage wird **nach Splitting auf volle 100 CHF abgerundet**.  \n"
             "- Kanton-**Basisteuer × Faktoren** ⇒ Kanton + Gemeinde + (Kirche je Konfession).  \n"
             "- **Personalsteuer**: fixer Kopfsteuer-Betrag, falls der Kanton eine erhebt.  \n\n"
