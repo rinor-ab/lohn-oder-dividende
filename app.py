@@ -392,7 +392,7 @@ def federal_tax(taxable_bund: float, relationship:str, children:int):
 
 # ------------------------- UI ----------------------------------
 st.title("Lohn vs. Dividende")
-st.caption("Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für Ihre AG oder GmbH simulieren. Auf Basis von Kanton, Gemeinde und individuellen Annahmen zeigt das Tool, welche Variante für Sie finanziell vorteilhafter ist. So erhalten Sie eine transparente Grundlage für Ihre Ausschüttungs- und Vergütungsentscheidungen..")
+st.caption("Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für Ihre AG oder GmbH simulieren. Auf Basis von Kanton, Gemeinde und individuellen Annahmen zeigt das Tool, welche Variante für Sie finanziell vorteilhafter ist. So erhalten Sie eine transparente Grundlage für Ihre Ausschüttungs- und Vergütungsentscheidungen.")
 
 # Location
 _, by_canton = load_locations()
