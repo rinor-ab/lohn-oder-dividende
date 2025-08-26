@@ -2,6 +2,7 @@
 enableCORS = false
 enableXsrfProtection = false
 headless = true
+fileWatcherType = "watchdog"
 
 [browser]
 gatherUsageStats = false
