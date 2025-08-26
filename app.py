@@ -716,15 +716,79 @@ if profit > 0:
         if canton_code == "BL":
             st.caption("BL FORMEL-Engine aktiv – Formel normalisiert (log/ln) und mit Splitting + Rundung ausgewertet.")
 
-    with st.expander("Hinweise", expanded=False):
+    with st.expander("Hinweise & Annahmen", expanded=False):
+        st.markdown("### So funktioniert das Modell")
         st.markdown(
-            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) \n"
-            "- **AHV/ALV/NBU/PK (AN):** 5.3% / 1.1% / 0.4% (bis 148’200) + PK-Einkauf (frei).\n"
-            "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder und Tariftabelle (nur wenn zulässig).\n"
-            "- **Bund:** zusätzlicher Kinderabzug −251 CHF/Kind auf der Bundessteuer.\n"
-            "- **BVG-Anzeige (AG/AN):** als Kostblöcke aufgeführt.\n"
-            "- **Abzüge:** bis der vollständige Abzugskatalog portiert ist, stehen zwei manuelle Felder (Bund / Kanton) zur Verfügung."
+            "**1) Dividende ermitteln**  \n"
+            "- Lohn = max(Markt-Mindestlohn, gewünschter Lohn, ≤ Gewinn).  \n"
+            "- AG-Nebenkosten (AHV/ALV/BVG/FAK/UVG) werden vom Gewinn abgezogen.  \n"
+            "- **Dividende** = Gewinn − Lohn − AG-Nebenkosten (ggf. durch Zielauszahlung begrenzt).  \n\n"
+            "**2) Steuerbarer Teil der Dividende**  \n"
+            "- **Bund**: pauschal 70 % steuerbar.  \n"
+            "- **Kanton/Gemeinde**: kantonale Quote gemäss Mapping.  \n"
+            "Formeln (vor Rundung):  \n"
+            "• `steuerbar_fed = AN-Netto + inc_fed·Div + weitere − Abzug_Bund`  \n"
+            "• `steuerbar_kant = AN-Netto + inc_cant·Div + weitere − Abzug_Kanton`  \n\n"
+            "**3) Tarifierung**  \n"
+            "- Bundes-/Kantonstarife (ZÜRICH/BUND/FREIBURG/FLATTAX/FORMEL) mit **Splitting** je nach Gruppe.  \n"
+            "- Bemessungsgrundlage wird **nach Splitting auf volle 100 CHF abgerundet**.  \n"
+            "- Kanton-**Basisteuer × Faktoren** ⇒ Kanton + Gemeinde + (Kirche je Konfession).  \n"
+            "- **Personalsteuer**: fixer Kopfsteuer-Betrag, falls der Kanton eine erhebt.  \n\n"
+            "**4) *Steuer auf Dividende (inkrementell)***  \n"
+            "Steuern werden zweimal berechnet: **mit** und **ohne** Dividende. Die Differenz je Ebene ist die Steuer, die **ausschliesslich** durch die Dividende entsteht. So sind Progression, Splitting und Rundung korrekt enthalten.  \n\n"
+            "**5) Netto an Inhaber**  \n"
+            "`Netto = (Lohn − AN-Abzüge) + Dividende − (Bund + Kanton + Gemeinde + Kirche + Personal)`"
         )
+    
+        # Optional: die aktuellen Zwischenschritte für diesen Fall anzeigen
+        if profit > 0 and "blocks" in B:
+            st.markdown("### Aktuelle Zwischenschritte (mit Ihren Eingaben)")
+            div_brutto = float(B.get("dividend", 0.0))
+            inc_fed = float((B["blocks"].get("inc_fed") or 0.70))
+            inc_cant = float((B["blocks"].get("inc_cant") or 0.70))
+            # Tarif-Basis MIT/ OHNE Dividende (nach 100-CHF-Rundung)
+            fed_with  = dinero_round_100_down(B["blocks"].get("taxable_fed", 0.0))
+            fed_wo    = dinero_round_100_down(B["blocks"].get("taxable_fed", 0.0)  - div_brutto*inc_fed)
+            cant_with = dinero_round_100_down(B["blocks"].get("taxable_cant", 0.0))
+            cant_wo   = dinero_round_100_down(B["blocks"].get("taxable_cant", 0.0) - div_brutto*inc_cant)
+    
+            st.markdown(
+                f"- **Dividende brutto:** CHF {div_brutto:,.0f}  \n"
+                f"- **Steuerbar**: Bund **CHF {div_brutto*inc_fed:,.0f}**, "
+                f"Kanton/Gemeinde **CHF {div_brutto*inc_cant:,.0f}**  \n"
+                f"- **Tarif-Basis nach Rundung (Bund):** {fed_wo:,.0f} → {fed_with:,.0f} "
+                f"(Δ {fed_with-fed_wo:,.0f})  \n"
+                f"- **Tarif-Basis nach Rundung (Kanton):** {cant_wo:,.0f} → {cant_with:,.0f} "
+                f"(Δ {cant_with-cant_wo:,.0f})"
+            )
+    
+            # falls die inkrementellen Steuerbeträge vorhanden sind, zeigen
+            div_tax = B["blocks"].get("div_tax")
+            if isinstance(div_tax, dict):
+                dt = div_tax
+                st.markdown(
+                    f"- **Steuer auf Dividende (inkr.)**: "
+                    f"Bund CHF {dt.get('fed',0):,.0f} · "
+                    f"Kanton CHF {dt.get('cant',0):,.0f} · "
+                    f"Gemeinde CHF {dt.get('city',0):,.0f} · "
+                    f"Kirche CHF {dt.get('church',0):,.0f} → "
+                    f"**Total CHF {dt.get('total',0):,.0f}**  \n"
+                    f"- **Effektiv-Steuersatz**: "
+                    f"{(dt.get('total',0)/max(div_brutto,1)):.1%} der Brutto-Dividende · "
+                    f"{(dt.get('total',0)/max(div_brutto*inc_fed,1)):.1%} des steuerbaren Teils (Bund)"
+                )
+    
+        # (Behalte deine bisherigen Bullet-Points gern darunter)
+        st.markdown("---")
+        st.markdown(
+            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) aus `factors/`.  \n"
+            "- **AHV/ALV/NBU/PK (AN):** 5.3 % / 1.1 % / 0.4 % (bis 148’200) + PK-Einkauf (frei).  \n"
+            "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder; nur wenn tariflich zulässig.  \n"
+            "- **Bund:** Kinderabzug −251 CHF/Kind auf der Bundessteuer.  \n"
+            "- **BVG-Anzeige (AG/AN):** als Kostblöcke; Steuerbasis nutzt devbrains-Netto.  \n"
+            "- **Abzüge:** bis zur vollständigen Portierung stehen zwei manuelle Felder (Bund/Kanton) zur Verfügung."
+        )
+
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
 
