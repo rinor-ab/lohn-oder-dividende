@@ -672,11 +672,11 @@ if profit > 0:
       st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
       st.write(
         f"Steuer auf **Dividende** (inkr.): Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
-        f"Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
-        f"Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
-        f"Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
-        f"Personal CHF {B['blocks']['div_tax']['personal']:,.0f} | "
-        f"**Total CHF {B['blocks']['div_tax']['total']:,.0f}**"
+        f"Δ Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
+        f"Δ Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
+        f"Δ Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
+        f"Δ Personal CHF {B['blocks']['div_tax']['personal']:,.0f} | "
+        f"**Δ Total CHF {B['blocks']['div_tax']['total']:,.0f}**"
       )
       st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
       st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
