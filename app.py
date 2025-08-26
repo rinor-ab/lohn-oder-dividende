@@ -488,6 +488,21 @@ def scenario_dividend():
     base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
         taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
     )
+    taxable_fed_wo  = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
+    taxable_cant_wo = clamp_pos(net_for_tax + other_inc - cant_ded_manual)
+
+    fed_tax_wo, _, _ = federal_tax(taxable_fed_wo, relationship, children)
+    base_cant_wo, tax_cant_wo, tax_city_wo, tax_church_wo, tax_pers_wo, _, _ = canton_tax(
+        taxable_cant_wo, CANT_ID, BFS_ID, relationship, children, confession
+    )
+
+    div_tax_fed    = max(0.0, fed_tax    - fed_tax_wo)
+    div_tax_cant   = max(0.0, tax_cant   - tax_cant_wo)
+    div_tax_city   = max(0.0, tax_city   - tax_city_wo)
+    div_tax_church = max(0.0, tax_church - tax_church_wo)
+    div_tax_person = max(0.0, tax_pers   - tax_pers_wo)  # meist 0 (Kopfsteuer fix), aber sauber berechnet
+    div_tax_total  = div_tax_fed + div_tax_cant + div_tax_city + div_tax_church + div_tax_person
+    # --- END NEW ---
 
     income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
     net_owner = (salary - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + dividend - income_tax_total
@@ -501,7 +516,12 @@ def scenario_dividend():
             base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church, personal=tax_pers,
             cant_grp=cant_grp, cant_tarif=cant_tarif,
             inc_fed=inc_fed, inc_cant=inc_cant,
-            taxable_fed=taxable_fed, taxable_cant=taxable_cant
+            taxable_fed=taxable_fed, taxable_cant=taxable_cant,
+            # --- NEW: tax caused by the dividend only ---
+            div_tax=dict(
+                fed=div_tax_fed, cant=div_tax_cant, city=div_tax_city,
+                church=div_tax_church, personal=div_tax_person, total=div_tax_total
+            )
         )
     }
 
@@ -607,6 +627,14 @@ if profit > 0:
       st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
       st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
       st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
+      st.write(
+        f"**Steuer auf Dividende (inkr.):** Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
+        f"Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
+        f"Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
+        f"Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
+        f"Personal CHF {B['blocks']['div_tax']['personal']:,.0f} | "
+        f"**Total CHF {B['blocks']['div_tax']['total']:,.0f}**"
+      )
       st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
       st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
   
