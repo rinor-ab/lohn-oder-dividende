@@ -8,9 +8,9 @@
 
 import json, math, pathlib, re
 import streamlit as st
-import matplotlib.pyplot as plt  # (unused but left untouched)
 import plotly.graph_objects as go
 import streamlit as st
+from typing import Optional
 
 
 # ------------------------- Data roots -------------------------
