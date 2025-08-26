@@ -564,232 +564,87 @@ def optimize_mix(step=1_000.0):
     return best
 
 # -------------------------  helper ------------------------
-def tax_breakdown_chart(
-    title: str, 
-    fed: Optional[float] = None, 
-    kant: Optional[float] = None, 
-    city: Optional[float] = None, 
-    church: Optional[float] = None, 
-    personal: Optional[float] = None,
-    use_color_coding: bool = True
-) -> None:
-    """
-    Create an enhanced horizontal bar chart for tax breakdown visualization.
+def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
+    labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
+    values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
     
-    Args:
-        title: Chart title
-        fed, kant, city, church, personal: Tax amounts (can be None)
-        use_color_coding: Whether to use different colors for each category
-    """
+    # Filter out zero values
+    non_zero_items = [(label, value) for label, value in zip(labels, values) if value > 0]
     
-    # Data preparation
-    labels = ["Bundessteuer", "Kantonssteuer", "Gemeindesteuer", "Kirchensteuer", "Personalsteuer"]
-    short_labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]  # For mobile
-    values = [float(x or 0) for x in [fed, kant, city, church, personal]]
-    
-    # Filter out zero values for cleaner display
-    non_zero_data = [(l, sl, v) for l, sl, v in zip(labels, short_labels, values) if v > 0]
-    
-    if not non_zero_data:
+    if not non_zero_items:
         st.warning("Keine Steuerdaten zum Anzeigen verfügbar.")
         return
     
-    display_labels, display_short_labels, display_values = zip(*non_zero_data)
-    total = sum(display_values)
-    max_value = max(display_values)
+    filtered_labels, filtered_values = zip(*non_zero_items)
+    
+    total = sum(filtered_values)
+    max_value = max(filtered_values) if filtered_values else 1.0
     
     # Calculate percentages
-    percentages = [(v / total * 100) for v in display_values]
+    percentages = [(v / total * 100.0) if total > 0 else 0.0 for v in filtered_values]
     
-    # Choose colors
-    if use_color_coding:
-        color_map = {
-            'Bundessteuer': COLORS['federal'],
-            'Kantonssteuer': COLORS['canton'], 
-            'Gemeindesteuer': COLORS['city'],
-            'Kirchensteuer': COLORS['church'],
-            'Personalsteuer': COLORS['personal']
-        }
-        bar_colors = [color_map.get(label, COLORS['primary']) for label in display_labels]
-    else:
-        bar_colors = COLORS['primary']
+    # Create text for outside labels
+    text_outside = [f"CHF {v:,.0f} ({p:.1f}%)" for v, p in zip(filtered_values, percentages)]
     
-    # Create text labels with better formatting
-    text_labels = []
-    for value, pct in zip(display_values, percentages):
-        if value >= 1000:
-            text_labels.append(f"CHF {value:,.0f} ({pct:.1f}%)")
-        else:
-            text_labels.append(f"CHF {value:.0f} ({pct:.1f}%)")
-    
-    # Create the figure
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        x=display_values,
-        y=display_short_labels,  # Use short labels for better mobile display
+    fig = go.Figure(go.Bar(
+        x=filtered_values,
+        y=filtered_labels,
         orientation="h",
-        text=text_labels,
+        text=text_outside,
         textposition="outside",
-        textfont=dict(size=11, color="#2c3e50"),
-        marker=dict(
-            color=bar_colors,
-            line=dict(width=0.5, color="rgba(255,255,255,0.3)"),
-            opacity=0.85
-        ),
-        hovertemplate=(
-            "<b>%{customdata}</b><br>"
-            "Betrag: CHF %{x:,.0f}<br>"
-            "Anteil: %{customdata2:.1f}%<br>"
-            "<extra></extra>"
-        ),
-        customdata=display_labels,
-        customdata2=percentages,
-        cliponaxis=False
+        marker=dict(color=BAR_COLOR, line=dict(width=0)),
+        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
+        customdata=percentages,
     ))
     
-    # Enhanced layout
+    # Prevent clipping of outside labels
+    fig.update_traces(cliponaxis=False)
+    
+    # Layout
     fig.update_layout(
-        title=dict(
-            text=f"<b>{title}</b>",
-            x=0.02,
-            y=0.95,
-            font=dict(size=16, color="#2c3e50")
-        ),
+        title=title,
         template=None,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        height=max(280, len(display_values) * 60),  # Dynamic height
-        bargap=0.3,
-        margin=dict(l=90, r=80, t=70, b=40),
+        height=max(250, len(filtered_values) * 50 + 100),  # Dynamic height
+        bargap=0.45,
+        margin=dict(l=80, r=100, t=56, b=28),  # Extra right margin for labels
         showlegend=False,
-        hoverlabel=dict(
-            bgcolor="white",
-            bordercolor="#cccccc",
-            font=dict(size=12, color="#2c3e50"),
-            namelength=-1
-        ),
-        font=dict(size=12, color="#2c3e50"),
+        hoverlabel=dict(namelength=-1, font=dict(size=12)),
+        font=dict(size=12),
     )
     
-    # Enhanced x-axis
+    # X-axis with headroom for labels
     fig.update_xaxes(
-        range=[0, max_value * 1.15],  # 15% headroom for labels
-        tickformat=",.0f",
+        range=[0, max_value * 1.15],  # 15% headroom
         ticksuffix=" CHF",
-        tickfont=dict(size=10, color="#7f8c8d"),
-        showgrid=True,
-        gridcolor="rgba(0,0,0,0.1)",
-        gridwidth=1,
-        zeroline=False,
-        showline=False,
+        showgrid=False, 
+        zeroline=False, 
+        showline=False, 
         ticks="",
         automargin=True,
     )
     
-    # Enhanced y-axis
     fig.update_yaxes(
-        tickfont=dict(size=11, color="#2c3e50"),
-        showgrid=False,
-        zeroline=False,
-        showline=False,
-        ticks="",
-        automargin=True,
-        categoryorder="trace"  # Maintain order as specified
+        showgrid=False, 
+        zeroline=False, 
+        showline=False, 
+        ticks="", 
+        automargin=True
     )
     
-    # Add total annotation with better styling
-    fig.add_annotation(
-        xref="paper", x=0.98, 
-        yref="paper", y=1.08,
-        text=f"<b>Gesamtsteuern: CHF {total:,.0f}</b>",
-        showarrow=False, 
-        font=dict(size=13, color="#2c3e50"),
-        bgcolor="rgba(175, 150, 109, 0.1)",
-        bordercolor="rgba(175, 150, 109, 0.3)",
-        borderwidth=1,
-        borderpad=8,
-        xanchor="right"
-    )
-    
-    # Add subtle watermark/branding (optional)
-    fig.add_annotation(
-        xref="paper", x=0.02, 
-        yref="paper", y=0.02,
-        text="Steuerrechner",
-        showarrow=False, 
-        font=dict(size=9, color="rgba(175, 150, 109, 0.6)"),
-        xanchor="left"
-    )
-    
-    # Display with enhanced configuration
-    st.plotly_chart(
-        fig, 
-        use_container_width=True, 
-        theme=None,
-        config={
-            'displayModeBar': True,
-            'displaylogo': False,
-            'modeBarButtonsToRemove': [
-                'pan2d', 'lasso2d', 'select2d', 'autoScale2d', 'resetScale2d'
-            ],
-            'toImageButtonOptions': {
-                'format': 'png',
-                'filename': 'steuer_breakdown',
-                'height': 500,
-                'width': 700,
-                'scale': 1
-            }
-        }
-    )
-
-# Alternative compact version for dashboards
-def tax_breakdown_chart_compact(
-    title: str, 
-    fed: Optional[float] = None, 
-    kant: Optional[float] = None, 
-    city: Optional[float] = None, 
-    church: Optional[float] = None, 
-    personal: Optional[float] = None
-) -> None:
-    """Compact version of the tax chart for dashboard views."""
-    
-    values = [float(x or 0) for x in [fed, kant, city, church, personal]]
-    labels = ["Bund", "Kt.", "Gem.", "Kirche", "Pers."]
-    
-    # Filter non-zero values
-    non_zero_data = [(l, v) for l, v in zip(labels, values) if v > 0]
-    if not non_zero_data:
-        return
-    
-    display_labels, display_values = zip(*non_zero_data)
-    total = sum(display_values)
-    
-    fig = go.Figure(go.Bar(
-        x=display_values,
-        y=display_labels,
-        orientation="h",
-        marker=dict(color=COLORS['primary'], opacity=0.8),
-        text=[f"{v/total*100:.0f}%" for v in display_values],
-        textposition="inside",
-        textfont=dict(size=10, color="white"),
-        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<extra></extra>"
-    ))
-    
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=12)),
-        height=150,
-        margin=dict(l=40, r=40, t=40, b=20),
-        showlegend=False,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-    
-    fig.update_xaxes(showticklabels=False, showgrid=False)
-    fig.update_yaxes(tickfont=dict(size=9))
+    # Add total annotation
+    if total > 0:
+        fig.add_annotation(
+            xref="paper", x=1.0, 
+            yref="paper", y=1.05,
+            text=f"<b>Total Steuern:</b> CHF {total:,.0f}",
+            showarrow=False, 
+            font=dict(size=12), 
+            xanchor="right"
+        )
     
     st.plotly_chart(fig, use_container_width=True, theme=None)
-
 # ------------------------- Run & render ------------------------
 if profit > 0:
     A = scenario_salary_only()
