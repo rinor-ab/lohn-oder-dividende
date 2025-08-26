@@ -33,8 +33,14 @@ if YEAR_ROOT is None:
 # ------------------------- Constants --------------------------
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
-BAR_COLOR = "#af966d"
-
+COLORS = {
+    'primary': "#af966d",      # Your brand color
+    'federal': "#8B4513",      # Darker brown for federal
+    'canton': "#CD853F",       # Medium brown for canton  
+    'city': "#DEB887",         # Light brown for city
+    'church': "#F4A460",       # Sandy brown for church
+    'personal': "#D2691E"      # Orange brown for personal
+}
 # devbrains gross->net for *income tax* base (AN-Seite)
 AHV_IV_EO = 0.053
 ALV      = 0.011
@@ -558,49 +564,230 @@ def optimize_mix(step=1_000.0):
     return best
 
 # -------------------------  helper ------------------------
-def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
-    labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
-    values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
-    total = sum(values)
-
-    pct = [(v / total * 100.0) if total > 0 else 0.0 for v in values]
-    text_outside = [f"CHF {v:,.0f}  ({p:.1f}%)" if v > 0 else "" for v, p in zip(values, pct)]
-
-    fig = go.Figure(go.Bar(
-        x=values,
-        y=labels,
+def tax_breakdown_chart(
+    title: str, 
+    fed: Optional[float] = None, 
+    kant: Optional[float] = None, 
+    city: Optional[float] = None, 
+    church: Optional[float] = None, 
+    personal: Optional[float] = None,
+    use_color_coding: bool = True
+) -> None:
+    """
+    Create an enhanced horizontal bar chart for tax breakdown visualization.
+    
+    Args:
+        title: Chart title
+        fed, kant, city, church, personal: Tax amounts (can be None)
+        use_color_coding: Whether to use different colors for each category
+    """
+    
+    # Data preparation
+    labels = ["Bundessteuer", "Kantonssteuer", "Gemeindesteuer", "Kirchensteuer", "Personalsteuer"]
+    short_labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]  # For mobile
+    values = [float(x or 0) for x in [fed, kant, city, church, personal]]
+    
+    # Filter out zero values for cleaner display
+    non_zero_data = [(l, sl, v) for l, sl, v in zip(labels, short_labels, values) if v > 0]
+    
+    if not non_zero_data:
+        st.warning("Keine Steuerdaten zum Anzeigen verfügbar.")
+        return
+    
+    display_labels, display_short_labels, display_values = zip(*non_zero_data)
+    total = sum(display_values)
+    max_value = max(display_values)
+    
+    # Calculate percentages
+    percentages = [(v / total * 100) for v in display_values]
+    
+    # Choose colors
+    if use_color_coding:
+        color_map = {
+            'Bundessteuer': COLORS['federal'],
+            'Kantonssteuer': COLORS['canton'], 
+            'Gemeindesteuer': COLORS['city'],
+            'Kirchensteuer': COLORS['church'],
+            'Personalsteuer': COLORS['personal']
+        }
+        bar_colors = [color_map.get(label, COLORS['primary']) for label in display_labels]
+    else:
+        bar_colors = COLORS['primary']
+    
+    # Create text labels with better formatting
+    text_labels = []
+    for value, pct in zip(display_values, percentages):
+        if value >= 1000:
+            text_labels.append(f"CHF {value:,.0f} ({pct:.1f}%)")
+        else:
+            text_labels.append(f"CHF {value:.0f} ({pct:.1f}%)")
+    
+    # Create the figure
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        x=display_values,
+        y=display_short_labels,  # Use short labels for better mobile display
         orientation="h",
-        text=text_outside,
+        text=text_labels,
         textposition="outside",
-        marker=dict(color=BAR_COLOR, line=dict(width=0)),   # <- single brand color
-        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
-        customdata=pct,
+        textfont=dict(size=11, color="#2c3e50"),
+        marker=dict(
+            color=bar_colors,
+            line=dict(width=0.5, color="rgba(255,255,255,0.3)"),
+            opacity=0.85
+        ),
+        hovertemplate=(
+            "<b>%{customdata}</b><br>"
+            "Betrag: CHF %{x:,.0f}<br>"
+            "Anteil: %{customdata2:.1f}%<br>"
+            "<extra></extra>"
+        ),
+        customdata=display_labels,
+        customdata2=percentages,
+        cliponaxis=False
     ))
-
+    
+    # Enhanced layout
     fig.update_layout(
-        title=title,
+        title=dict(
+            text=f"<b>{title}</b>",
+            x=0.02,
+            y=0.95,
+            font=dict(size=16, color="#2c3e50")
+        ),
         template=None,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        height=300,
-        bargap=0.45,
-        margin=dict(l=80, r=20, t=52, b=12),  # ~2px extra padding top/bottom for mobile
-        xaxis_title="CHF",
-        yaxis=dict(categoryorder="array", categoryarray=labels),
+        height=max(280, len(display_values) * 60),  # Dynamic height
+        bargap=0.3,
+        margin=dict(l=90, r=80, t=70, b=40),
         showlegend=False,
-        hoverlabel=dict(namelength=-1, font=dict(size=12)),
-        font=dict(size=12),
+        hoverlabel=dict(
+            bgcolor="white",
+            bordercolor="#cccccc",
+            font=dict(size=12, color="#2c3e50"),
+            namelength=-1
+        ),
+        font=dict(size=12, color="#2c3e50"),
     )
-    fig.update_xaxes(showgrid=False, zeroline=False, showline=False, ticks="")
-    fig.update_yaxes(showgrid=False, zeroline=False, showline=False, ticks="")
+    
+    # Enhanced x-axis
+    fig.update_xaxes(
+        range=[0, max_value * 1.15],  # 15% headroom for labels
+        tickformat=",.0f",
+        ticksuffix=" CHF",
+        tickfont=dict(size=10, color="#7f8c8d"),
+        showgrid=True,
+        gridcolor="rgba(0,0,0,0.1)",
+        gridwidth=1,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        automargin=True,
+    )
+    
+    # Enhanced y-axis
+    fig.update_yaxes(
+        tickfont=dict(size=11, color="#2c3e50"),
+        showgrid=False,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        automargin=True,
+        categoryorder="trace"  # Maintain order as specified
+    )
+    
+    # Add total annotation with better styling
+    fig.add_annotation(
+        xref="paper", x=0.98, 
+        yref="paper", y=1.08,
+        text=f"<b>Gesamtsteuern: CHF {total:,.0f}</b>",
+        showarrow=False, 
+        font=dict(size=13, color="#2c3e50"),
+        bgcolor="rgba(175, 150, 109, 0.1)",
+        bordercolor="rgba(175, 150, 109, 0.3)",
+        borderwidth=1,
+        borderpad=8,
+        xanchor="right"
+    )
+    
+    # Add subtle watermark/branding (optional)
+    fig.add_annotation(
+        xref="paper", x=0.02, 
+        yref="paper", y=0.02,
+        text="Steuerrechner",
+        showarrow=False, 
+        font=dict(size=9, color="rgba(175, 150, 109, 0.6)"),
+        xanchor="left"
+    )
+    
+    # Display with enhanced configuration
+    st.plotly_chart(
+        fig, 
+        use_container_width=True, 
+        theme=None,
+        config={
+            'displayModeBar': True,
+            'displaylogo': False,
+            'modeBarButtonsToRemove': [
+                'pan2d', 'lasso2d', 'select2d', 'autoScale2d', 'resetScale2d'
+            ],
+            'toImageButtonOptions': {
+                'format': 'png',
+                'filename': 'steuer_breakdown',
+                'height': 500,
+                'width': 700,
+                'scale': 1
+            }
+        }
+    )
 
-    if total > 0:
-        fig.add_annotation(
-            x=total, y=-0.6,
-            text=f"<b>Total Steuern:</b> CHF {total:,.0f}",
-            showarrow=False, font=dict(size=12), xanchor="right"
-        )
-
+# Alternative compact version for dashboards
+def tax_breakdown_chart_compact(
+    title: str, 
+    fed: Optional[float] = None, 
+    kant: Optional[float] = None, 
+    city: Optional[float] = None, 
+    church: Optional[float] = None, 
+    personal: Optional[float] = None
+) -> None:
+    """Compact version of the tax chart for dashboard views."""
+    
+    values = [float(x or 0) for x in [fed, kant, city, church, personal]]
+    labels = ["Bund", "Kt.", "Gem.", "Kirche", "Pers."]
+    
+    # Filter non-zero values
+    non_zero_data = [(l, v) for l, v in zip(labels, values) if v > 0]
+    if not non_zero_data:
+        return
+    
+    display_labels, display_values = zip(*non_zero_data)
+    total = sum(display_values)
+    
+    fig = go.Figure(go.Bar(
+        x=display_values,
+        y=display_labels,
+        orientation="h",
+        marker=dict(color=COLORS['primary'], opacity=0.8),
+        text=[f"{v/total*100:.0f}%" for v in display_values],
+        textposition="inside",
+        textfont=dict(size=10, color="white"),
+        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<extra></extra>"
+    ))
+    
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12)),
+        height=150,
+        margin=dict(l=40, r=40, t=40, b=20),
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    
+    fig.update_xaxes(showticklabels=False, showgrid=False)
+    fig.update_yaxes(tickfont=dict(size=9))
+    
     st.plotly_chart(fig, use_container_width=True, theme=None)
 
 # ------------------------- Run & render ------------------------
@@ -642,13 +829,12 @@ if profit > 0:
           "Steueraufteilung (Szenario B)",
           B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
       )
-      st.markdown("#")  
+      st.markdown(" ")  
       tax_breakdown_chart(
         "Steuer auf Dividende (inkrementell)",
         B["blocks"]["div_tax"]["fed"], B["blocks"]["div_tax"]["cant"], B["blocks"]["div_tax"]["city"],
         B["blocks"]["div_tax"]["church"], B["blocks"]["div_tax"]["personal"]
       )
-      st.markdown("#")
   
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
