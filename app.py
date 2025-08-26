@@ -628,7 +628,7 @@ if profit > 0:
       st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
       st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
       st.write(
-        f"**Steuer auf Dividende (inkr.):** Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
+        f"Steuer auf **Dividende** (inkr.): Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
         f"Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
         f"Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
         f"Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
@@ -642,7 +642,14 @@ if profit > 0:
           "Steueraufteilung (Szenario B)",
           B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
       )
-
+      st.markdown(#)  
+      tax_breakdown_chart(
+        "Steuer auf Dividende (inkrementell)",
+        B["blocks"]["div_tax"]["fed"], B["blocks"]["div_tax"]["cant"], B["blocks"]["div_tax"]["city"],
+        B["blocks"]["div_tax"]["church"], B["blocks"]["div_tax"]["personal"]
+      )
+      st.markdown(#)
+  
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
     c1,c2=st.columns(2)
@@ -667,9 +674,9 @@ if profit > 0:
         if canton_code == "BL":
             st.caption("BL FORMEL-Engine aktiv – Formel normalisiert (log/ln) und mit Splitting + Rundung ausgewertet.")
 
-    with st.expander("Hinweise & Annahmen", expanded=False):
+    with st.expander("Hinweise", expanded=False):
         st.markdown(
-            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) aus `factors/`.\n"
+            "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) \n"
             "- **AHV/ALV/NBU/PK (AN):** 5.3% / 1.1% / 0.4% (bis 148’200) + PK-Einkauf (frei).\n"
             "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder und Tariftabelle (nur wenn zulässig).\n"
             "- **Bund:** zusätzlicher Kinderabzug −251 CHF/Kind auf der Bundessteuer.\n"
