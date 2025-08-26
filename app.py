@@ -33,6 +33,7 @@ if YEAR_ROOT is None:
 # ------------------------- Constants --------------------------
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
+BAR_COLOR = "#af966d"  # keep your brand color
 COLORS = {
     'primary': "#af966d",      # Your brand color
     'federal': "#8B4513",      # Darker brown for federal
