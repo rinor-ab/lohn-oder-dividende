@@ -788,6 +788,18 @@ if profit > 0:
             "- **BVG-Anzeige (AG/AN):** als Kostblöcke; Steuerbasis nutzt devbrains-Netto.  \n"
             "- **Abzüge:** bis zur vollständigen Portierung stehen zwei manuelle Felder (Bund/Kanton) zur Verfügung."
         )
+        st.markdown("---")
+        st.markdown(
+            """
+    - Die Ergebnisse sind **unverbindliche Näherungen**. Tarife/Faktoren und Annahmen werden gepflegt, können aber unvollständig
+      oder veraltet sein. Modellvereinfachungen (z. B. Rundungen auf 100 CHF, BVG-Abbildung, Teilbesteuerung, Splitting,
+      manuelle Abzüge, Personalsteuer) führen zu Differenzen gegenüber amtlichen Veranlagungen.
+    - **Spezialfälle** (z. B. Quellensteuer, mehrere Wohn-/Steuerorte, Immobilien, Verlustvorträge, besondere Abzüge) sind nur
+      teilweise berücksichtigt.
+    - **Keine Steuer- oder Rechtsberatung.** Für verbindliche Auskünfte wenden Sie sich an Ihre Steuerberatung oder die Behörde.
+      Mit der Nutzung erkennen Sie diese Hinweise an.
+            """
+        )
 
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
