@@ -642,13 +642,13 @@ if profit > 0:
           "Steueraufteilung (Szenario B)",
           B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
       )
-      st.markdown(#)  
+      st.markdown("#")  
       tax_breakdown_chart(
         "Steuer auf Dividende (inkrementell)",
         B["blocks"]["div_tax"]["fed"], B["blocks"]["div_tax"]["cant"], B["blocks"]["div_tax"]["city"],
         B["blocks"]["div_tax"]["church"], B["blocks"]["div_tax"]["personal"]
       )
-      st.markdown(#)
+      st.markdown("#")
   
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
