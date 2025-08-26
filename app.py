@@ -1,9 +1,4 @@
-# app.py – Lohn vs. Dividende (devbrains 2025; full canton engine incl. BL fix + plotly chart)
-# -----------------------------------------------------------------------------
-# Uses the devbrains "parsed/2025" dataset (locations, tarifs, factors) and
-# reproduces the tariff engines (ZUERICH, BUND, FREIBURG, FLATTAX, FORMEL)
-# with correct splitting + rounding. Church tax uses factors by confession.
-# Dividenden-Teilbesteuerung: Bund fix 70%, Kanton dynamisch per JSON.
+# app.py – Lohn vs. Dividende 
 # -----------------------------------------------------------------------------
 
 import json, math, pathlib, re
