@@ -1,11 +1,47 @@
-# app.py – Lohn vs. Dividende 
-# -----------------------------------------------------------------------------
+"""
+app.py – Lohn vs. Dividende
+---------------------------
 
-import json, math, pathlib, re
-import streamlit as st
+This Streamlit application helps Swiss company owners compare the net
+outcome of paying themselves a salary versus a dividend.  It loads the
+devbrains dataset for 2025 (tariffs, factors and deductions) and uses
+it to compute income taxes at the federal and cantonal level.  The app
+also suggests automatic deductions for federal and cantonal taxes
+based on the user's family situation, salary and other income.  It
+implements the following enhancements:
+
+* Automatic deduction suggestions are calculated from the deduction
+  dataset.  Standardised child and marriage deductions as well as
+  professional expense deductions are handled automatically.  Users
+  may override these suggestions via number inputs.
+* Insurance premium & savings interest deductions (KKSpar) are
+  automatically computed for the federal level using the maxima from
+  the Swiss Federal Tax Administration (ESTV) for 2025: CHF 1 800
+  per single or CHF 3 700 per married couple if they contribute to
+  the 2nd and 3a pillars; otherwise CHF 2 700 and CHF 5 550.  An
+  additional CHF 700 per child is added.  These values come from
+  the ESTV page on deductions and rates【445471956656578†L160-L207】.
+* Third‑pillar (Säule 3a) deductions are suggested using the
+  statutory maxima for 2025 published by the ESTV: CHF 7 258 for
+  taxpayers with a 2nd‑pillar pension plan and CHF 36 288 for
+  taxpayers without【16920089821364†L449-L462】.  The app asks whether
+  the user contributes to the 2nd pillar (BVG) to choose the
+  appropriate maximum.
+
+The app retains all existing functionality for computing employer and
+employee social contributions, gross‑to‑net conversions, and income
+tax calculations.  Manual deduction fields remain available and can
+override the automatic suggestions.
+"""
+
+import json
+import math
+import pathlib
+import re
+from typing import Optional, Tuple, Dict
+
 import plotly.graph_objects as go
 import streamlit as st
-from typing import Optional
 
 
 # ------------------------- Data roots -------------------------
@@ -16,7 +52,7 @@ CANDIDATE_DATA_ROOTS = [
     APP_DIR / "2025",
     pathlib.Path("/mnt/data/2025"),  # also works when running in notebooks
 ]
-YEAR_ROOT = None
+YEAR_ROOT: Optional[pathlib.Path] = None
 for p in CANDIDATE_DATA_ROOTS:
     if (p / "locations.json").exists():
         YEAR_ROOT = p
@@ -25,6 +61,7 @@ if YEAR_ROOT is None:
     st.error("Konnte devbrains-Daten nicht finden. Erwartet: data/parsed/2025/…")
     st.stop()
 
+
 # ------------------------- Constants --------------------------
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
@@ -32,178 +69,123 @@ BAR_COLOR = "#af966d"  # keep your brand color
 COLORS = {
     'primary': "#af966d",      # Your brand color
     'federal': "#8B4513",      # Darker brown for federal
-    'canton': "#CD853F",       # Medium brown for canton  
+    'canton': "#CD853F",       # Medium brown for canton
     'city': "#DEB887",         # Light brown for city
     'church': "#F4A460",       # Sandy brown for church
-    'personal': "#D2691E"      # Orange brown for personal
+    'personal': "#D2691E"       # Orange brown for personal
 }
-# devbrains gross->net for *income tax* base (AN-Seite)
+
+# Social contribution constants
 AHV_IV_EO = 0.053
-ALV      = 0.011
-NBU      = 0.004
+ALV = 0.011
+NBU = 0.004
 ALV_NBU_CEILING = 148_200.0
 
-# BVG (nur Anzeige der Kostenblöcke)
+# BVG (only for display of cost blocks)
 BVG_rates = {"25-34": 0.07, "35-44": 0.10, "45-54": 0.15, "55-65": 0.18}
 BVG_entry_threshold = 22_680.0
 BVG_coord_deduction = 26_460.0
-BVG_max_insured     = 90_720.0
+BVG_max_insured = 90_720.0
+
+# Federal insurance premium & savings interest deduction maxima (ESTV 2025)
+# Values for singles/married with 2nd pillar & 3a contributions and without.
+FED_INSURANCE_SINGLE_WITH_PILLARS = 1_800.0
+FED_INSURANCE_SINGLE_WITHOUT_PILLARS = 2_700.0
+FED_INSURANCE_MARRIED_WITH_PILLARS = 3_700.0
+FED_INSURANCE_MARRIED_WITHOUT_PILLARS = 5_550.0
+FED_INSURANCE_PER_CHILD = 700.0
+
+# Federal 3a deduction maxima for 2025 (ESTV)
+FED_3A_WITH_PILLAR2 = 7_258.0
+FED_3A_WITHOUT_PILLAR2 = 36_288.0
+
 
 # ------------------------- Small helpers ----------------------
-def clamp_pos(x):
+def clamp_pos(x: Optional[float]) -> float:
+    """Return a non‑negative float from x; treat None or invalid as 0."""
     try:
         return max(0.0, float(x or 0.0))
-    except:
+    except Exception:
         return 0.0
 
-def age_to_band(age:int)->str:
-    a=int(age or 35)
-    if a<35: return "25-34"
-    if a<45: return "35-44"
-    if a<55: return "45-54"
+
+def age_to_band(age: int) -> str:
+    """Return the BVG age band for a given age."""
+    a = int(age or 35)
+    if a < 35:
+        return "25-34"
+    if a < 45:
+        return "35-44"
+    if a < 55:
+        return "45-54"
     return "55-65"
 
-def bvg_insured_part(salary):
+
+def bvg_insured_part(salary: float) -> float:
+    """Compute the insured salary part for BVG contributions."""
     return max(0.0, min(salary, BVG_max_insured) - BVG_coord_deduction)
 
+
 def dinero_round_100_down(x: float) -> float:
-    return math.floor((x or 0.0)/100.0)*100.0
+    """Round down to the next lower multiple of 100 CHF."""
+    return math.floor((x or 0.0) / 100.0) * 100.0
+
 
 # ------------------------- Loaders ----------------------------
 @st.cache_data(show_spinner=False)
-def load_locations():
+def load_locations() -> Tuple[list, Dict[str, list]]:
     with (YEAR_ROOT / "locations.json").open("r", encoding="utf-8") as f:
-        locs=json.load(f)
-    by_canton={}
+        locs = json.load(f)
+    by_canton: Dict[str, list] = {}
     for r in locs:
         by_canton.setdefault(r["Canton"], []).append(r)
     for k in by_canton:
         by_canton[k].sort(key=lambda x: x["BfsName"])
     return locs, by_canton
 
+
 @st.cache_data(show_spinner=False)
-def load_tarifs(canton_id:int):
+def load_tarifs(canton_id: int) -> list:
     with (YEAR_ROOT / "tarifs" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
         return json.load(f)
 
+
 @st.cache_data(show_spinner=False)
-def load_factors(canton_id:int):
+def load_factors(canton_id: int) -> list:
     with (YEAR_ROOT / "factors" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
         return json.load(f)
 
-# --- NEW: deduction loader & calculator -----------------------
+
 @st.cache_data(show_spinner=False)
-def load_deductions(canton_id: int):
-    """
-    Load the deduction definitions for the federal government (Bund) and the
-    selected canton. Each file contains a list of objects; the first object
-    of type "EINKOMMENSSTEUER" holds the deduction definitions under
-    the key ``items``.
-    """
-    # Federal deductions are stored in 0.json
+def load_deductions(canton_id: int) -> Tuple[list, list]:
+    """Load deduction items for the federation (0.json) and a given canton."""
+    # Federal items
     try:
         with (YEAR_ROOT / "deductions" / "0.json").open("r", encoding="utf-8") as f:
             fed_data = json.load(f)
             fed_items = next(
                 (obj.get("items", []) for obj in fed_data if obj.get("type") == "EINKOMMENSSTEUER"),
-                []
+                [],
             )
     except Exception:
         fed_items = []
-    # Cantonal deductions
+    # Cantonal items
     try:
         with (YEAR_ROOT / "deductions" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
             cant_data = json.load(f)
             cant_items = next(
                 (obj.get("items", []) for obj in cant_data if obj.get("type") == "EINKOMMENSSTEUER"),
-                []
+                [],
             )
     except Exception:
         cant_items = []
     return fed_items, cant_items
 
-def calc_auto_deductions(items: list, salary: float, other_inc: float,
-                         relationship: str, children: int):
-    """
-    Compute automatic deductions based on a list of deduction items. Only
-    deductions that can be derived from existing inputs are calculated.
 
-    Currently supported:
-    - Child deductions (``SozKind_*``): standardized amount multiplied by
-      number of children.
-    - Married deduction (``SozVerheiratet_EK``): standardized amount for
-      married couples.
-    - Professional expense deduction for main occupation (``HauptErw_EK``):
-      percentage of salary with min/max limits.
-    - Professional expense deduction for secondary occupation (``NebenErw_EK``):
-      percentage of other income with min/max limits.
-
-    Returns:
-        A tuple (total_deduction, breakdown) where ``breakdown`` maps
-        deduction IDs to the calculated amount.
-    """
-    total = 0.0
-    breakdown = {}
-    for item in items:
-        ident = (item.get("id") or "").upper()
-        fmt = (item.get("format") or "").upper()
-        minimum = float(item.get("minimum") or 0.0)
-        maximum = float(item.get("maximum") or 0.0)
-        percent = float(item.get("percent") or 0.0) / 100.0
-        amount = float(item.get("amount") or 0.0)
-
-        # Child deductions
-        if ident.startswith("SOZKIND") or ident.startswith("SOZKINDER"):
-            ded = amount * children
-            if ded > 0:
-                breakdown[ident] = ded
-                total += ded
-            continue
-
-        # Married deduction
-        if ident == "SOZVERHEIRATET_EK" and relationship in ("m", "rp"):
-            if amount > 0:
-                breakdown[ident] = amount
-                total += amount
-            continue
-
-        # Main occupation expense deduction
-        if ident == "HAUPTERW_EK":
-            base = salary
-            ded = base * percent
-            if "MINIMUM" in fmt:
-                ded = max(ded, minimum)
-            if "MAXIMUM" in fmt and maximum > 0:
-                ded = min(ded, maximum)
-            if ded > 0:
-                breakdown[ident] = ded
-                total += ded
-            continue
-
-        # Secondary occupation expense deduction
-        if ident == "NEBENERW_EK":
-            base = other_inc
-            ded = base * percent
-            if "MINIMUM" in fmt:
-                ded = max(ded, minimum)
-            if "MAXIMUM" in fmt and maximum > 0:
-                ded = min(ded, maximum)
-            if ded > 0:
-                breakdown[ident] = ded
-                total += ded
-            continue
-
-        # Unsupported deduction types are ignored; they must be entered manually
-    return total, breakdown
-
-# --- NEW: dynamic Teilbesteuerung (cantonal) -------------------
 @st.cache_data(show_spinner=False)
-def load_dividend_inclusion_map():
-    """
-    Returns map {"ZH": 0.5, "FR": 0.7, ...} with cantonal inclusion factors.
-    Searches common locations; defaults handled in incl_rates().
-    """
-    candidates = []
+def load_dividend_inclusion_map() -> Dict[str, float]:
+    """Load cantonal inclusion rates for dividends if available."""
+    candidates: list[pathlib.Path] = []
     for base in [APP_DIR, YEAR_ROOT, APP_DIR / "data", pathlib.Path("/mnt/data")]:
         if not base:
             continue
@@ -218,93 +200,243 @@ def load_dividend_inclusion_map():
             continue
     return {}
 
+
+# ------------------------- Automatic deduction calculator --------------------
+def calc_auto_deductions(
+    items: list,
+    salary: float,
+    other_inc: float,
+    relationship: str,
+    children: int,
+    has_second_pillar: bool,
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Compute automatically calculable deductions from a list of deduction items.
+    Returns the total deduction and a breakdown per deduction ID.  Supported
+    deductions include:
+
+    * Child deductions (SozKind_EK and variants) – multiplied by number of
+      children.
+    * Married deduction (SozVerheiratet_EK) – fixed amount for married couples.
+    * Professional expense deductions (HauptErw_EK and NebenErw_EK) –
+      percentages with minimum/maximum limits applied to salary and other income.
+    * Insurance premium & savings interest deductions (KKSparSparkapital_EK,
+      KKSparEheSparkapital_EK, KKSparKindSparkapital_EK) – using federal maxima
+      from the ESTV for 2025【445471956656578†L160-L207】.
+    * Third‑pillar (3a) deduction maxima (S3aMax_mitVorsorge_EK and
+      S3aMax_ohneVorsorge_EK) – using statutory maxima for 2025【16920089821364†L449-L462】.
+
+    Unsupported deductions are ignored and must be handled manually via
+    the number inputs in the UI.
+    """
+    total = 0.0
+    breakdown: Dict[str, float] = {}
+    for item in items:
+        ident = (item.get("id") or "").upper()
+        fmt = (item.get("format") or "").upper()
+        minimum = float(item.get("minimum") or 0.0)
+        maximum = float(item.get("maximum") or 0.0)
+        percent = float(item.get("percent") or 0.0) / 100.0
+        amount = float(item.get("amount") or 0.0)
+
+        # Child deductions: multiply standardized amount by number of children
+        if ident.startswith("SOZKIND"):
+            ded = amount * children
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Married deduction
+        if ident == "SOZVERHEIRATET_EK" and relationship in ("m", "rp"):
+            if amount > 0:
+                breakdown[ident] = amount
+                total += amount
+            continue
+
+        # Professional expense deduction for main occupation
+        if ident == "HAUPTERW_EK":
+            base = salary
+            ded = base * percent
+            if "MINIMUM" in fmt:
+                ded = max(ded, minimum)
+            if "MAXIMUM" in fmt and maximum > 0:
+                ded = min(ded, maximum)
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Professional expense deduction for secondary occupation
+        if ident == "NEBENERW_EK":
+            base = other_inc
+            ded = base * percent
+            if "MINIMUM" in fmt:
+                ded = max(ded, minimum)
+            if "MAXIMUM" in fmt and maximum > 0:
+                ded = min(ded, maximum)
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Insurance premium & savings interest deductions (federal maxima)
+        # These items may appear in cantonal data but we only apply federal limits
+        if ident == "KKSPARSPARKAPITAL_EK":
+            # Single taxpayers
+            if relationship in ("s", "c"):
+                ded = (
+                    FED_INSURANCE_SINGLE_WITH_PILLARS
+                    if has_second_pillar
+                    else FED_INSURANCE_SINGLE_WITHOUT_PILLARS
+                )
+            else:  # married couples
+                ded = (
+                    FED_INSURANCE_MARRIED_WITH_PILLARS
+                    if has_second_pillar
+                    else FED_INSURANCE_MARRIED_WITHOUT_PILLARS
+                )
+            ded += FED_INSURANCE_PER_CHILD * children
+            breakdown[ident] = ded
+            total += ded
+            continue
+        if ident == "KKSPAREHESPARKAPITAL_EK":
+            # Married couples only
+            ded = (
+                FED_INSURANCE_MARRIED_WITH_PILLARS
+                if has_second_pillar
+                else FED_INSURANCE_MARRIED_WITHOUT_PILLARS
+            )
+            ded += FED_INSURANCE_PER_CHILD * children
+            breakdown[ident] = ded
+            total += ded
+            continue
+        if ident == "KKSPARKINDSPARKAPITAL_EK":
+            # Per‑child allowance: apply 700 CHF per child
+            ded = FED_INSURANCE_PER_CHILD * children
+            breakdown[ident] = ded
+            total += ded
+            continue
+
+        # Third‑pillar 3a deduction maxima
+        if ident in ("S3AMAX_MITVORSORGE_EK", "S3AMAXMITVORSORGE_EK"):
+            ded = FED_3A_WITH_PILLAR2
+            breakdown[ident] = ded
+            total += ded
+            continue
+        if ident in ("S3AMAX_OHNEVORSORGE_EK", "S3Amax_ohneVorsorge_EK"):
+            ded = FED_3A_WITHOUT_PILLAR2
+            breakdown[ident] = ded
+            total += ded
+            continue
+
+        # Unsupported deductions are ignored; they must be entered manually
+    return total, breakdown
+
+
 # ------------------------- Tariff engine ----------------------
-def pick_income_table(tariffs:list, tax_type="EINKOMMENSSTEUER"):
-    if not tariffs: return None
-    cands=[t for t in tariffs if (t.get("taxType") or "").upper()==tax_type.upper()]
-    if not cands: return None
+def pick_income_table(tariffs: list, tax_type: str = "EINKOMMENSSTEUER") -> Optional[dict]:
+    if not tariffs:
+        return None
+    cands = [t for t in tariffs if (t.get("taxType") or "").upper() == tax_type.upper()]
+    if not cands:
+        return None
     for t in cands:
-        if (t.get("group") or "").strip().upper()=="ALLE":
+        if (t.get("group") or "").strip().upper() == "ALLE":
             return t
     for t in cands:
-        g=(t.get("group") or "").upper()
+        g = (t.get("group") or "").upper()
         if "LEDIG" in g or "ALLEINE" in g:
             return t
     return cands[0]
 
-def eval_zuerich(rows, taxable, split=1):
+
+def eval_zuerich(rows: list, taxable: float, split: int = 1) -> float:
     base = taxable / max(1, split)
-    rem = base; tax = 0.0
+    rem = base
+    tax = 0.0
     for r in rows:
-        width=float(r.get("amount") or 0.0)
-        pct=(r.get("percent") or 0.0)/100.0
-        if width<=0: continue
-        use=min(rem,width)
-        tax += use*pct
+        width = float(r.get("amount") or 0.0)
+        pct = (r.get("percent") or 0.0) / 100.0
+        if width <= 0:
+            continue
+        use = min(rem, width)
+        tax += use * pct
         rem -= use
-        if rem<=0: break
-    if rem>0 and rows:
-        tax += rem * ((rows[-1].get("percent") or 0.0)/100.0)
+        if rem <= 0:
+            break
+    if rem > 0 and rows:
+        tax += rem * ((rows[-1].get("percent") or 0.0) / 100.0)
     return tax * max(1, split)
 
-def eval_bund(rows, taxable, split=1):
-    base = taxable / max(1, split)
-    last=None
-    for r in rows:
-        thr=float(r.get("amount") or 0.0)
-        if thr<=base: last=r
-        else: break
-    if not last: return 0.0
-    fixed=float(last.get("taxes") or 0.0)
-    thr=float(last.get("amount") or 0.0)
-    rate=(last.get("percent") or 0.0)/100.0
-    return (fixed + (base - thr)*rate) * max(1, split)
 
-def eval_freiburg(rows, taxable, split=1):
+def eval_bund(rows: list, taxable: float, split: int = 1) -> float:
     base = taxable / max(1, split)
-    last=None
+    last = None
     for r in rows:
-        amount=float(r.get("amount") or 0.0)
-        if amount>=base:
-            if not last or (last.get("amount") or 0.0)==0: return 0.0
-            last_amt=float(last.get("amount") or 0.0)
-            last_pct=float(last.get("percent") or 0.0)
+        thr = float(r.get("amount") or 0.0)
+        if thr <= base:
+            last = r
+        else:
+            break
+    if not last:
+        return 0.0
+    fixed = float(last.get("taxes") or 0.0)
+    thr = float(last.get("amount") or 0.0)
+    rate = (last.get("percent") or 0.0) / 100.0
+    return (fixed + (base - thr) * rate) * max(1, split)
+
+
+def eval_freiburg(rows: list, taxable: float, split: int = 1) -> float:
+    base = taxable / max(1, split)
+    last = None
+    for r in rows:
+        amount = float(r.get("amount") or 0.0)
+        if amount >= base:
+            if not last or (last.get("amount") or 0.0) == 0:
+                return 0.0
+            last_amt = float(last.get("amount") or 0.0)
+            last_pct = float(last.get("percent") or 0.0)
             pct_diff = float(r.get("percent") or 0.0) - last_pct
             part_count = amount - last_amt
-            part_percentage = (pct_diff / part_count) if part_count>0 else 0.0
+            part_percentage = (pct_diff / part_count) if part_count > 0 else 0.0
             part_diff = base - last_amt
             final_pct = last_pct + part_diff * part_percentage
-            return taxable * (final_pct/100.0)
-        last=r
-    return taxable * ((last.get("percent") or 0.0)/100.0) if last else 0.0
+            return taxable * (final_pct / 100.0)
+        last = r
+    return taxable * ((last.get("percent") or 0.0) / 100.0) if last else 0.0
 
-def eval_flattax(rows, taxable, split=1):
+
+def eval_flattax(rows: list, taxable: float, split: int = 1) -> float:
     r = rows[0] if rows else {}
-    return taxable * ((r.get("percent") or 0.0)/100.0)
+    return taxable * ((r.get("percent") or 0.0) / 100.0)
+
 
 def _normalize_formula(expr: str) -> str:
-    """Make devbrains 'FORMEL' rows executable in Python (robust for BL)."""
-    if not expr: return ""
+    """Normalize devbrains 'FORMEL' rows to be Python‑executable (for Basel‑Landschaft)."""
+    if not expr:
+        return ""
     s = expr.replace("$wert$", "X")
     s = re.sub(r"\bln\s*\(\s*X\s*\)", "log(X)", s)
     s = re.sub(r"\blog\s*\(\s*X\s*\)", "log(X)", s)
     s = re.sub(r"\blog\s+X\b", "log(X)", s)
     return s
 
-def eval_formel(rows, taxable, split=1):
+
+def eval_formel(rows: list, taxable: float, split: int = 1) -> float:
     base = taxable / max(1, split)
-    selected=None
+    selected = None
     for r in rows:
-        thr=float(r.get("amount") or 0.0)
-        frm=(r.get("formula") or "").strip()
-        if thr<=base and frm:
-            selected=r
-        elif thr>base:
+        thr = float(r.get("amount") or 0.0)
+        frm = (r.get("formula") or "").strip()
+        if thr <= base and frm:
+            selected = r
+        elif thr > base:
             break
     if selected is None:
         for r in reversed(rows):
             if (r.get("formula") or "").strip():
-                selected=r
+                selected = r
                 break
     if selected is None:
         return 0.0
@@ -315,68 +447,89 @@ def eval_formel(rows, taxable, split=1):
     except Exception:
         return 0.0
 
-def groups_for_relationship(relationship: str, children: int):
-    groups=[]
-    if relationship in ("m","rp"):
+
+def groups_for_relationship(relationship: str, children: int) -> list[str]:
+    groups: list[str] = []
+    if relationship in ("m", "rp"):
         groups.append("VERHEIRATET")
     else:
-        if (children or 0)>0: groups.append("LEDIG_MIT_KINDER")
-        if relationship=="s": groups.append("LEDIG_ALLEINE")
-        elif relationship=="c": groups.append("LEDIG_KONKUBINAT")
-    if not groups: groups.append("LEDIG_ALLEINE")
+        if (children or 0) > 0:
+            groups.append("LEDIG_MIT_KINDER")
+        if relationship == "s":
+            groups.append("LEDIG_ALLEINE")
+        elif relationship == "c":
+            groups.append("LEDIG_KONKUBINAT")
+    if not groups:
+        groups.append("LEDIG_ALLEINE")
     return groups
 
-def group_splitting_eligible(group: str)->bool:
-    return group in ("VERHEIRATET","LEDIG_MIT_KINDER")
 
-def pick_tarif(canton_id:int, tax_type:str, groups: list[str]):
+def group_splitting_eligible(group: str) -> bool:
+    return group in ("VERHEIRATET", "LEDIG_MIT_KINDER")
+
+
+def pick_tarif(canton_id: int, tax_type: str, groups: list[str]) -> Tuple[Optional[dict], str]:
     tarifs = load_tarifs(canton_id)
-    tt = [t for t in tarifs if (t.get("taxType") or "").upper()==tax_type.upper()]
-    if not tt: return None, None
+    tt = [t for t in tarifs if (t.get("taxType") or "").upper() == tax_type.upper()]
+    if not tt:
+        return None, None
     for grp in groups:
         for t in tt:
             g = t.get("group") or ""
-            if g=="ALLE" or grp in g:
+            if g == "ALLE" or grp in g:
                 return t, grp
     return tt[0], groups[0]
 
-def eval_tariff_amount(tarif_obj, taxable: float, group: str):
-    if not tarif_obj or taxable<=0: return 0.0
+
+def eval_tariff_amount(tarif_obj: dict, taxable: float, group: str) -> float:
+    if not tarif_obj or taxable <= 0:
+        return 0.0
     table_type = (tarif_obj.get("tableType") or "").upper()
-    # Zurich table sometimes carries base taxes -> treat as BUND
-    if table_type=="ZUERICH" and any((row.get("taxes") or 0)>0 for row in (tarif_obj.get("table") or [])):
-        table_type="BUND"
+    # Zurich table sometimes carries base taxes -> treat as Bund
+    if table_type == "ZUERICH" and any((row.get("taxes") or 0) > 0 for row in (tarif_obj.get("table") or [])):
+        table_type = "BUND"
     split = int(tarif_obj.get("splitting") or 0)
-    split_ok = (split>0 and group_splitting_eligible(group))
+    split_ok = (split > 0 and group_splitting_eligible(group))
     split_val = split if split_ok else 1
-    # devbrains: round down after splitting
+    # Round down after splitting to full 100 CHF
     taxable_rounded = dinero_round_100_down(taxable / split_val) * split_val
     rows = tarif_obj.get("table") or []
-    if table_type=="FLATTAX":  return eval_flattax(rows,   taxable_rounded, split_val)
-    if table_type=="ZUERICH":  return eval_zuerich(rows,   taxable_rounded, split_val)
-    if table_type=="BUND":     return eval_bund(rows,      taxable_rounded, split_val)
-    if table_type=="FREIBURG": return eval_freiburg(rows,  taxable_rounded, split_val)
-    if table_type=="FORMEL":   return eval_formel(rows,    taxable_rounded, split_val)
+    if table_type == "FLATTAX":
+        return eval_flattax(rows, taxable_rounded, split_val)
+    if table_type == "ZUERICH":
+        return eval_zuerich(rows, taxable_rounded, split_val)
+    if table_type == "BUND":
+        return eval_bund(rows, taxable_rounded, split_val)
+    if table_type == "FREIBURG":
+        return eval_freiburg(rows, taxable_rounded, split_val)
+    if table_type == "FORMEL":
+        return eval_formel(rows, taxable_rounded, split_val)
     return eval_zuerich(rows, taxable_rounded, split_val)
 
+
 # ------------------------- Factors (multipliers) ---------------
-def get_factor_for_bfs(canton_id:int, bfs_id:int):
+def get_factor_for_bfs(canton_id: int, bfs_id: int) -> Optional[dict]:
     for f in load_factors(canton_id):
-        if f.get("Location",{}).get("BfsID")==bfs_id:
+        if f.get("Location", {}).get("BfsID") == bfs_id:
             return f
     return None
 
-def church_income_factor(confession:str, factor:dict)->float:
-    if not factor: return 0.0
-    if confession=="christ":      return float(factor.get("IncomeRateChrist") or 0.0)
-    if confession=="roman":       return float(factor.get("IncomeRateRoman") or 0.0)
-    if confession=="protestant":  return float(factor.get("IncomeRateProtestant") or 0.0)
+
+def church_income_factor(confession: str, factor: dict) -> float:
+    if not factor:
+        return 0.0
+    if confession == "christ":
+        return float(factor.get("IncomeRateChrist") or 0.0)
+    if confession == "roman":
+        return float(factor.get("IncomeRateRoman") or 0.0)
+    if confession == "protestant":
+        return float(factor.get("IncomeRateProtestant") or 0.0)
     return 0.0  # none
 
-# --- Personalsteuer JSON loader (canton code -> spec)
+
 @st.cache_data(show_spinner=False)
-def load_personal_tax_json():
-    # look in app folder, data folders, and /mnt/data
+def load_personal_tax_json() -> dict:
+    # Search multiple locations for a personal tax JSON file
     for base in [APP_DIR, YEAR_ROOT, APP_DIR / "data", pathlib.Path("/mnt/data")]:
         if not base:
             continue
@@ -391,13 +544,13 @@ def load_personal_tax_json():
                 pass
     return {}
 
+
 def _personal_tax_from_json(canton_code: str, relationship: str) -> float:
-    """Compute Personal-/Kopfsteuer from JSON spec for the given canton code."""
+    """Compute personal/head tax from a JSON spec for the given canton code."""
     spec = load_personal_tax_json().get(canton_code)
     if not spec or not spec.get("has_personal_tax"):
         return 0.0
-
-    # base amount for one person (sum canton+commune if 'both')
+    # Base amount for one person (sum canton+commune if 'both')
     amt = 0.0
     if "amount" in spec:
         amt = float(spec["amount"] or 0.0)
@@ -409,43 +562,45 @@ def _personal_tax_from_json(canton_code: str, relationship: str) -> float:
             elif isinstance(spec.get("commune_optional"), dict):
                 rng = spec["commune_optional"].get("range")
                 if isinstance(rng, (list, tuple)) and len(rng) == 2:
-                    # use the upper bound as default (matches your “SO = 50 CHF” expectation)
                     amt += float(rng[1] or 0.0)
-
-    # heads: 2 if verheiratet/partnerschaft
+    # Heads: 2 if married/registered partnership
     heads = 2 if relationship in ("m", "rp") else 1
-
-    # rule: per_person vs per_couple_one
+    # Rule: per_person vs per_couple_one
     rule = spec.get("rule", "per_person")
     if rule == "per_couple_one":
-        return amt * (1 if heads == 2 else 1)  # one per Haushalt/Ehepaar
-    # default: per_person
+        return amt * (1 if heads == 2 else 1)  # one per household
+    # Default: per_person
     return amt * heads
 
 
 # ------------------------- Payroll & tax helpers ---------------
-def gross_to_net_for_tax(gross: float, pk: float)->tuple[float, dict]:
-    """Devbrains gross->net used for the taxable income base (AN side only)."""
+def gross_to_net_for_tax(gross: float, pk: float) -> Tuple[float, Dict[str, float]]:
+    """Convert gross salary to net for tax purposes (employee contributions)."""
     g = clamp_pos(gross)
     ahv = g * AHV_IV_EO
     alv = min(g, ALV_NBU_CEILING) * ALV
     nbu = min(g, ALV_NBU_CEILING) * NBU
     pkd = clamp_pos(pk)
     net = g - (ahv + alv + nbu + pkd)
-    return max(0.0, net), {"ahv":ahv,"alv":alv,"nbu":nbu,"pk":pkd}
+    return max(0.0, net), {"ahv": ahv, "alv": alv, "nbu": nbu, "pk": pkd}
 
-def employer_costs(salary: float, age_key: str, fak=0.015, uvg=0.01):
-    if salary<=0: return dict(ahv=0.0,alv=0.0,bvg=0.0,extra=0.0,total=0.0)
+
+def employer_costs(salary: float, age_key: str, fak: float = 0.015, uvg: float = 0.01) -> dict:
+    if salary <= 0:
+        return dict(ahv=0.0, alv=0.0, bvg=0.0, extra=0.0, total=0.0)
     ahv = 0.053 * salary
     alv = 0.011 * min(salary, ALV_NBU_CEILING)
-    bvg = (BVG_rates[age_key]/2.0) * bvg_insured_part(salary) if salary>=BVG_entry_threshold else 0.0
-    extra = fak*salary + uvg*salary
-    return dict(ahv=ahv, alv=alv, bvg=bvg, extra=extra, total=ahv+alv+bvg+extra)
+    bvg = (BVG_rates[age_key] / 2.0) * bvg_insured_part(salary) if salary >= BVG_entry_threshold else 0.0
+    extra = fak * salary + uvg * salary
+    return dict(ahv=ahv, alv=alv, bvg=bvg, extra=extra, total=ahv + alv + bvg + extra)
 
-def qualifies_partial(share_pct): return (share_pct or 0.0) >= 10.0
 
-# --- UPDATED: incl_rates -> canton from JSON, Bund fixed 70% ---
-def incl_rates(qualifies: bool, canton_code: str):
+def qualifies_partial(share_pct: float) -> bool:
+    return (share_pct or 0.0) >= 10.0
+
+
+def incl_rates(qualifies: bool, canton_code: str) -> Tuple[float, float]:
+    """Return dividend inclusion rates for federal and cantonal taxes."""
     if not qualifies:
         return 1.0, 1.0
     inc_fed = 0.70
@@ -453,61 +608,75 @@ def incl_rates(qualifies: bool, canton_code: str):
     inc_cant = float(mapping.get(canton_code, 0.70))
     return inc_fed, inc_cant
 
-def canton_tax(taxable_canton: float, canton_id:int, bfs_id:int,
-               relationship:str, children:int, confession:str,
-               canton_code_str: str | None = None):
+
+def canton_tax(
+    taxable_canton: float,
+    canton_id: int,
+    bfs_id: int,
+    relationship: str,
+    children: int,
+    confession: str,
+    canton_code_str: Optional[str] = None,
+) -> Tuple[float, float, float, float, float, str, Optional[dict]]:
     groups = groups_for_relationship(relationship, children)
     tarif, grp = pick_tarif(canton_id, "EINKOMMENSSTEUER", groups)
     base = eval_tariff_amount(tarif, taxable_canton, grp)
     factor = get_factor_for_bfs(canton_id, bfs_id)
-    canton = base * ((factor.get("IncomeRateCanton",0.0) or 0.0)/100.0) if factor else 0.0
-    city   = base * ((factor.get("IncomeRateCity",0.0) or 0.0)/100.0)   if factor else 0.0
-    church = base * (church_income_factor(confession, factor)/100.0)     if factor else 0.0
-
-        # Personal-/Kopfsteuer: Tarif -> factors -> JSON fallback
+    canton = base * ((factor.get("IncomeRateCanton", 0.0) or 0.0) / 100.0) if factor else 0.0
+    city = base * ((factor.get("IncomeRateCity", 0.0) or 0.0) / 100.0) if factor else 0.0
+    church = base * (church_income_factor(confession, factor) / 100.0) if factor else 0.0
+    # Personal/head tax: first try tariff; fallback to JSON
     pers_tarif, _ = pick_tarif(canton_id, "PERSONALSTEUER", groups)
     personal = eval_tariff_amount(pers_tarif, taxable_canton, grp) if pers_tarif else 0.0
-
     if personal <= 0.0:
-        # (if your dataset ever carries a CHF value in factors)
         try:
-            personal = _personal_tax_from_factor(factor, base, relationship)
+            # _personal_tax_from_factor may be defined in dataset; optional
+            personal = _personal_tax_from_factor(factor, base, relationship)  # type: ignore  # noqa
         except NameError:
-            # helper not present; ignore
             personal = 0.0 if personal is None else personal
-
     if personal <= 0.0 and canton_code_str:
         personal = _personal_tax_from_json(canton_code_str, relationship)
-
-
     return base, canton, city, church, personal, grp, tarif
 
-def federal_tax(taxable_bund: float, relationship:str, children:int):
+
+def federal_tax(taxable_bund: float, relationship: str, children: int) -> Tuple[float, str, Optional[dict]]:
     groups = groups_for_relationship(relationship, children)
     tarif, grp = pick_tarif(0, "EINKOMMENSSTEUER", groups)
     taxes = eval_tariff_amount(tarif, taxable_bund, grp)
-    # devbrains: −251 CHF pro Kind auf der Bundessteuer
-    taxes = max(0.0, taxes - 251.0*children)
+    # Federal child allowance: –251 CHF per child
+    taxes = max(0.0, taxes - 251.0 * children)
     return taxes, grp, tarif
+
 
 # ------------------------- UI ----------------------------------
 st.title("Lohn vs. Dividende")
-st.caption("Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für Ihre AG oder GmbH simulieren. Auf Basis von Kanton, Gemeinde und individuellen Annahmen zeigt das Tool, welche Variante für Sie finanziell vorteilhafter ist. So erhalten Sie eine transparente Grundlage für Ihre Ausschüttungs- und Vergütungsentscheidungen.")
+st.caption(
+    "Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für "
+    "Ihre AG oder GmbH simulieren. Auf Basis von Kanton, Gemeinde und individuellen "
+    "Annahmen zeigt das Tool, welche Variante für Sie finanziell vorteilhafter ist. "
+    "So erhalten Sie eine transparente Grundlage für Ihre Ausschüttungs- und Vergütungsentscheidungen."
+)
 
-# Location
+# Location selection
 _, by_canton = load_locations()
 canton_code = st.selectbox("Kanton", sorted(by_canton.keys()))
-gemeinde_rec = st.selectbox("Gemeinde", options=by_canton[canton_code], format_func=lambda r: r["BfsName"])
-BFS_ID   = int(gemeinde_rec["BfsID"])
-CANT_ID  = int(gemeinde_rec["CantonID"])
+gemeinde_rec = st.selectbox(
+    "Gemeinde",
+    options=by_canton[canton_code],
+    format_func=lambda r: r["BfsName"],
+)
+BFS_ID = int(gemeinde_rec["BfsID"])
+CANT_ID = int(gemeinde_rec["CantonID"])
 
 col1, col2 = st.columns(2)
 with col1:
-    profit         = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
+    profit = st.number_input("Firmengewinn **vor Lohn** [CHF]", 0.0, step=10_000.0)
     desired_income = st.number_input("Zielauszahlung [CHF] (optional)", 0.0, step=10_000.0)
 with col2:
-    other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
-    age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
+    other_inc = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
+    age_input = st.number_input(
+        "Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1
+    )
 
 with st.expander("ANNAHMEN", expanded=True):
     st.subheader("Annahmen")
@@ -515,321 +684,472 @@ with st.expander("ANNAHMEN", expanded=True):
     with cA:
         relationship = st.selectbox(
             "Zivilstand",
-            options=[("s","Ledig"),("c","Konkubinat"),("m","Verheiratet"),("rp","Eingetragene Partnerschaft")],
-            index=0, format_func=lambda x: x[1]
+            options=[("s", "Ledig"), ("c", "Konkubinat"), ("m", "Verheiratet"), ("rp", "Eingetragene Partnerschaft")],
+            index=0,
+            format_func=lambda x: x[1],
         )[0]
-        children     = st.number_input("Kinder", 0, step=1)
-        confession   = st.selectbox(
+        children = st.number_input("Kinder", 0, step=1)
+        confession = st.selectbox(
             "Konfession (Kirchensteuer)",
-            options=[("none","Keine"),("roman","Röm.-kath."),("protestant","Ref./evang."),("christ","Christkath.")],
-            index=0, format_func=lambda x: x[1]
+            options=[("none", "Keine"), ("roman", "Röm.-kath."), ("protestant", "Ref./evang."), ("christ", "Christkath.")],
+            index=0,
+            format_func=lambda x: x[1],
         )[0]
-        share_pct    = st.number_input("Beteiligungsquote [%] (Teilbesteuerung Div. ab 10%)", 0.0, 100.0, 100.0, step=5.0)
-        min_salary   = st.number_input("Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0)
+        share_pct = st.number_input(
+            "Beteiligungsquote [%] (Teilbesteuerung Div. ab 10%)", 0.0, 100.0, 100.0, step=5.0
+        )
+        min_salary = st.number_input(
+            "Marktüblicher Mindestlohn [CHF]", 0.0, step=10_000.0, value=120_000.0
+        )
+        # Whether the taxpayer contributes to the 2nd pillar (BVG).  Determines insurance and 3a maxima.
+        has_second_pillar = st.selectbox(
+            "Hat der Steuerpflichtige BVG-Beiträge (2. Säule)?",
+            options=[(True, "Ja (mit 2. Säule)"), (False, "Nein (ohne 2. Säule)")],
+            index=0,
+            format_func=lambda x: x[1],
+        )[0]
     with cB:
-        pk_buyin     = st.number_input("PK-Einkauf (privat) / PK-Abzug [CHF]", 0.0, step=1.0)
-        fak_rate     = st.number_input("FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1)/100.0
-        uvg_rate     = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
+        pk_buyin = st.number_input(
+            "PK-Einkauf (privat) / PK-Abzug [CHF]", 0.0, step=1.0
+        )
+        fak_rate = st.number_input(
+            "FAK (nur Arbeitgeber) [%]", 0.0, 5.0, 1.5, step=0.1
+        ) / 100.0
+        uvg_rate = st.number_input(
+            "UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1
+        ) / 100.0
         st.caption("AHV/ALV/BVG standardmässig **an**.")
     st.markdown("---")
 
-    # Compute automatic deduction suggestions before showing number inputs
+    # Load deduction definitions once per run
+    fed_items, cant_items = load_deductions(CANT_ID)
+
+    # Estimate salary for deduction calculation (use desired income if provided)
     salary_base = profit if (desired_income is None or desired_income == 0) else min(profit, desired_income)
     net_for_tax_base, _tmp = gross_to_net_for_tax(salary_base, pk_buyin)
-    fed_items, cant_items = load_deductions(CANT_ID)
+
+    # Compute automatic deduction suggestions
     fed_auto, _fed_breakdown = calc_auto_deductions(
-        fed_items, net_for_tax_base, other_inc, relationship, children
+        fed_items,
+        net_for_tax_base,
+        other_inc,
+        relationship,
+        int(children),
+        has_second_pillar,
     )
     cant_auto, _cant_breakdown = calc_auto_deductions(
-        cant_items, net_for_tax_base, other_inc, relationship, children
+        cant_items,
+        net_for_tax_base,
+        other_inc,
+        relationship,
+        int(children),
+        has_second_pillar,
     )
 
     st.markdown("**Abzüge – automatisch berechnete Werte können angepasst werden:**")
     d1, d2 = st.columns(2)
     with d1:
-        fed_ded_manual  = st.number_input("Abzüge **Bund** [CHF]", value=fed_auto, step=100.0)
+        fed_ded_manual = st.number_input(
+            "Abzüge **Bund** [CHF]", value=fed_auto, step=100.0
+        )
     with d2:
-        cant_ded_manual = st.number_input("Abzüge **Kanton/Gemeinde** [CHF]", value=cant_auto, step=100.0)
+        cant_ded_manual = st.number_input(
+            "Abzüge **Kanton/Gemeinde** [CHF]", value=cant_auto, step=100.0
+        )
 
-optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
-debug_mode   = st.checkbox("Debug-Informationen anzeigen", value=False)
+optimizer_on = st.checkbox(
+    "Optimierer – beste Mischung (Lohn + Dividende) finden", value=True
+)
+debug_mode = st.checkbox("Debug-Informationen anzeigen", value=False)
 
-if desired_income == 0: desired_income = None
-elif desired_income and desired_income > profit: desired_income = profit
+if desired_income == 0:
+    desired_income = None
+elif desired_income and desired_income > profit:
+    desired_income = profit
+
 
 # ------------------------- Scenarios ---------------------------
-def scenario_salary_only():
-    age_key = age_to_band(age_input)
+def scenario_salary_only() -> dict:
+    age_key = age_to_band(int(age_input))
     salary = profit if desired_income is None else min(profit, desired_income)
     ag = employer_costs(salary, age_key, fak=fak_rate, uvg=uvg_rate)
-
     net_for_tax, an_parts = gross_to_net_for_tax(salary, pk_buyin)
-    taxable_fed  = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
+    taxable_fed = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
     taxable_cant = clamp_pos(net_for_tax + other_inc - cant_ded_manual)
-
-    fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
-    base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
-        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
+    fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, int(children))
+    (
+        base_cant,
+        tax_cant,
+        tax_city,
+        tax_church,
+        tax_pers,
+        cant_grp,
+        cant_tarif,
+    ) = canton_tax(
+        taxable_cant,
+        CANT_ID,
+        BFS_ID,
+        relationship,
+        int(children),
+        confession,
+        canton_code_str=canton_code,
     )
-
     income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
     net_owner = salary - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"]) - income_tax_total
-
     return {
-        "salary": salary, "dividend": 0.0,
-        "income_tax": income_tax_total, "net": net_owner,
+        "salary": salary,
+        "dividend": 0.0,
+        "income_tax": income_tax_total,
+        "net": net_owner,
         "blocks": dict(
-            ag=ag, an=an_parts,
-            fed=fed_tax, fed_grp=fed_grp, fed_tarif=fed_tarif,
-            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church, personal=tax_pers,
-            cant_grp=cant_grp, cant_tarif=cant_tarif,
-            taxable_fed=taxable_fed, taxable_cant=taxable_cant
-        )
+            ag=ag,
+            an=an_parts,
+            fed=fed_tax,
+            fed_grp=fed_grp,
+            fed_tarif=fed_tarif,
+            base_cant=base_cant,
+            cant=tax_cant,
+            city=tax_city,
+            church=tax_church,
+            personal=tax_pers,
+            cant_grp=cant_grp,
+            cant_tarif=cant_tarif,
+            taxable_fed=taxable_fed,
+            taxable_cant=taxable_cant,
+        ),
     }
 
-def scenario_dividend():
-    age_key = age_to_band(age_input)
-    qualifies = qualifies_partial(share_pct)
-    # UPDATED: pass canton_code for cantonal inclusion
-    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
 
+def scenario_dividend() -> dict:
+    age_key = age_to_band(int(age_input))
+    qualifies = qualifies_partial(share_pct)
+    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
     salary = min(min_salary, profit if desired_income is None else min(profit, desired_income))
     ag = employer_costs(salary, age_key, fak=fak_rate, uvg=uvg_rate)
-
     pool = clamp_pos(profit - salary - ag["total"])
     desired_left = None if desired_income is None else clamp_pos(desired_income - salary)
     dividend = pool if desired_left is None else min(pool, desired_left)
-    if salary < min_salary: dividend = 0.0
-
+    if salary < min_salary:
+        dividend = 0.0
     net_for_tax, an_parts = gross_to_net_for_tax(salary, pk_buyin)
-    taxable_fed  = clamp_pos(net_for_tax + dividend*inc_fed  + other_inc - fed_ded_manual)
-    taxable_cant = clamp_pos(net_for_tax + dividend*inc_cant + other_inc - cant_ded_manual)
-
-    fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, children)
-    base_cant, tax_cant, tax_city, tax_church, tax_pers, cant_grp, cant_tarif = canton_tax(
-        taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
+    taxable_fed = clamp_pos(net_for_tax + dividend * inc_fed + other_inc - fed_ded_manual)
+    taxable_cant = clamp_pos(net_for_tax + dividend * inc_cant + other_inc - cant_ded_manual)
+    fed_tax, fed_grp, fed_tarif = federal_tax(taxable_fed, relationship, int(children))
+    (
+        base_cant,
+        tax_cant,
+        tax_city,
+        tax_church,
+        tax_pers,
+        cant_grp,
+        cant_tarif,
+    ) = canton_tax(
+        taxable_cant,
+        CANT_ID,
+        BFS_ID,
+        relationship,
+        int(children),
+        confession,
+        canton_code_str=canton_code,
     )
-    taxable_fed_wo  = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
+    taxable_fed_wo = clamp_pos(net_for_tax + other_inc - fed_ded_manual)
     taxable_cant_wo = clamp_pos(net_for_tax + other_inc - cant_ded_manual)
-
-    fed_tax_wo, _, _ = federal_tax(taxable_fed_wo, relationship, children)
-    base_cant_wo, tax_cant_wo, tax_city_wo, tax_church_wo, tax_pers_wo, _, _ = canton_tax(
-        taxable_cant_wo, CANT_ID, BFS_ID, relationship, children, confession
+    fed_tax_wo, _, _ = federal_tax(taxable_fed_wo, relationship, int(children))
+    (
+        base_cant_wo,
+        tax_cant_wo,
+        tax_city_wo,
+        tax_church_wo,
+        tax_pers_wo,
+        _,
+        _,
+    ) = canton_tax(
+        taxable_cant_wo,
+        CANT_ID,
+        BFS_ID,
+        relationship,
+        int(children),
+        confession,
     )
-
-    div_tax_fed    = max(0.0, fed_tax    - fed_tax_wo)
-    div_tax_cant   = max(0.0, tax_cant   - tax_cant_wo)
-    div_tax_city   = max(0.0, tax_city   - tax_city_wo)
+    div_tax_fed = max(0.0, fed_tax - fed_tax_wo)
+    div_tax_cant = max(0.0, tax_cant - tax_cant_wo)
+    div_tax_city = max(0.0, tax_city - tax_city_wo)
     div_tax_church = max(0.0, tax_church - tax_church_wo)
-    div_tax_person = max(0.0, tax_pers   - tax_pers_wo)  # meist 0 (Kopfsteuer fix), aber sauber berechnet
-    div_tax_total  = div_tax_fed + div_tax_cant + div_tax_city + div_tax_church + div_tax_person
-    # --- END NEW ---
-
+    div_tax_person = max(0.0, tax_pers - tax_pers_wo)
+    div_tax_total = (
+        div_tax_fed + div_tax_cant + div_tax_city + div_tax_church + div_tax_person
+    )
     income_tax_total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
-    net_owner = (salary - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + dividend - income_tax_total
-
+    net_owner = (
+        salary
+        - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])
+        + dividend
+        - income_tax_total
+    )
     return {
-        "salary": salary, "dividend": dividend,
-        "income_tax": income_tax_total, "net": net_owner,
+        "salary": salary,
+        "dividend": dividend,
+        "income_tax": income_tax_total,
+        "net": net_owner,
         "blocks": dict(
-            ag=ag, an=an_parts,
-            fed=fed_tax, fed_grp=fed_grp, fed_tarif=fed_tarif,
-            base_cant=base_cant, cant=tax_cant, city=tax_city, church=tax_church, personal=tax_pers,
-            cant_grp=cant_grp, cant_tarif=cant_tarif,
-            inc_fed=inc_fed, inc_cant=inc_cant,
-            taxable_fed=taxable_fed, taxable_cant=taxable_cant,
-            # --- NEW: tax caused by the dividend only ---
+            ag=ag,
+            an=an_parts,
+            fed=fed_tax,
+            fed_grp=fed_grp,
+            fed_tarif=fed_tarif,
+            base_cant=base_cant,
+            cant=tax_cant,
+            city=tax_city,
+            church=tax_church,
+            personal=tax_pers,
+            cant_grp=cant_grp,
+            cant_tarif=cant_tarif,
+            inc_fed=inc_fed,
+            inc_cant=inc_cant,
+            taxable_fed=taxable_fed,
+            taxable_cant=taxable_cant,
             div_tax=dict(
-                fed=div_tax_fed, cant=div_tax_cant, city=div_tax_city,
-                church=div_tax_church, personal=div_tax_person, total=div_tax_total
-            )
-        )
+                fed=div_tax_fed,
+                cant=div_tax_cant,
+                city=div_tax_city,
+                church=div_tax_church,
+                personal=div_tax_person,
+                total=div_tax_total,
+            ),
+        ),
     }
 
-def optimize_mix(step=1_000.0):
-    best=None
-    age_key = age_to_band(age_input)
-    qualifies = qualifies_partial(share_pct)
-    # UPDATED: pass canton_code
-    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
 
+def optimize_mix(step: float = 1_000.0) -> dict:
+    best: Optional[dict] = None
+    age_key = age_to_band(int(age_input))
+    qualifies = qualifies_partial(share_pct)
+    inc_fed, inc_cant = incl_rates(qualifies, canton_code)
     cap = profit if desired_income is None else min(profit, desired_income)
-    s=0.0
-    while s<=cap+1e-6:
+    s = 0.0
+    while s <= cap + 1e-6:
         ag = employer_costs(s, age_key, fak=fak_rate, uvg=uvg_rate)
         pool = clamp_pos(profit - s - ag["total"])
         desired_left = None if desired_income is None else clamp_pos(desired_income - s)
         div = pool if desired_left is None else min(pool, desired_left)
-        if s < min_salary: div=0.0
-
+        if s < min_salary:
+            div = 0.0
         net_for_tax, an_parts = gross_to_net_for_tax(s, pk_buyin)
-        taxable_fed  = clamp_pos(net_for_tax + div*inc_fed  + other_inc - fed_ded_manual)
-        taxable_cant = clamp_pos(net_for_tax + div*inc_cant + other_inc - cant_ded_manual)
-
-        fed_tax,_grp,_tf = federal_tax(taxable_fed, relationship, children)
-        base_cant, tax_cant, tax_city, tax_church, tax_pers, _cg, _ct = canton_tax(
-            taxable_cant, CANT_ID, BFS_ID, relationship, children, confession, canton_code_str=canton_code
+        taxable_fed = clamp_pos(net_for_tax + div * inc_fed + other_inc - fed_ded_manual)
+        taxable_cant = clamp_pos(net_for_tax + div * inc_cant + other_inc - cant_ded_manual)
+        fed_tax, _grp, _tf = federal_tax(taxable_fed, relationship, int(children))
+        (
+            base_cant,
+            tax_cant,
+            tax_city,
+            tax_church,
+            tax_pers,
+            _cg,
+            _ct,
+        ) = canton_tax(
+            taxable_cant,
+            CANT_ID,
+            BFS_ID,
+            relationship,
+            int(children),
+            confession,
+            canton_code_str=canton_code,
         )
         total = fed_tax + tax_cant + tax_city + tax_church + tax_pers
-        net = (s - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])) + div - total
-        if (best is None) or (net>best["net"]):
-            best=dict(salary=s, dividend=div, income_tax=total, net=net,
-                      retained_after_tax=max(0.0, pool - div))
-        s+=step
-    return best
+        net = (
+            s
+            - (an_parts["ahv"] + an_parts["alv"] + an_parts["nbu"] + an_parts["pk"])
+            + div
+            - total
+        )
+        if (best is None) or (net > best["net"]):
+            best = dict(
+                salary=s,
+                dividend=div,
+                income_tax=total,
+                net=net,
+                retained_after_tax=max(0.0, pool - div),
+            )
+        s += step
+    return best or {}
 
-# -------------------------  helper ------------------------
-def tax_breakdown_chart(title: str, fed: float, kant: float, city: float, church: float, personal: float):
+
+# ------------------------- Chart helper ------------------------
+def tax_breakdown_chart(
+    title: str, fed: float, kant: float, city: float, church: float, personal: float
+) -> None:
     labels = ["Bund", "Kanton", "Gemeinde", "Kirche", "Personal"]
     values = [float(fed or 0), float(kant or 0), float(city or 0), float(church or 0), float(personal or 0)]
-    
     # Filter out zero values
     non_zero_items = [(label, value) for label, value in zip(labels, values) if value > 0]
-    
     if not non_zero_items:
         st.warning("Keine Steuerdaten zum Anzeigen verfügbar.")
         return
-    
     filtered_labels, filtered_values = zip(*non_zero_items)
-    
     total = sum(filtered_values)
     max_value = max(filtered_values) if filtered_values else 1.0
-    
-    # Calculate percentages
     percentages = [(v / total * 100.0) if total > 0 else 0.0 for v in filtered_values]
-    
-    # Create text for outside labels
     text_outside = [f"CHF {v:,.0f} ({p:.1f}%)" for v, p in zip(filtered_values, percentages)]
-    
-    fig = go.Figure(go.Bar(
-        x=filtered_values,
-        y=filtered_labels,
-        orientation="h",
-        text=text_outside,
-        textposition="outside",
-        marker=dict(color=BAR_COLOR, line=dict(width=0)),
-        hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
-        customdata=percentages,
-    ))
-    
-    # Prevent clipping of outside labels
+    fig = go.Figure(
+        go.Bar(
+            x=filtered_values,
+            y=filtered_labels,
+            orientation="h",
+            text=text_outside,
+            textposition="outside",
+            marker=dict(color=BAR_COLOR, line=dict(width=0)),
+            hovertemplate="<b>%{y}</b><br>CHF %{x:,.0f}<br>% vom Total: %{customdata:.1f}%<extra></extra>",
+            customdata=percentages,
+        )
+    )
     fig.update_traces(cliponaxis=False)
-    
-    # Layout
     fig.update_layout(
         title=title,
         template=None,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        height=max(250, len(filtered_values) * 50 + 100),  # Dynamic height
+        height=max(250, len(filtered_values) * 50 + 100),
         bargap=0.45,
-        margin=dict(l=80, r=100, t=56, b=28),  # Extra right margin for labels
+        margin=dict(l=80, r=100, t=56, b=28),
         showlegend=False,
         hoverlabel=dict(namelength=-1, font=dict(size=12)),
         font=dict(size=12),
     )
-    
-    # X-axis with headroom for labels
     fig.update_xaxes(
-        range=[0, max_value * 1.15],  # 15% headroom
+        range=[0, max_value * 1.15],
         ticksuffix=" CHF",
-        showgrid=False, 
-        zeroline=False, 
-        showline=False, 
+        showgrid=False,
+        zeroline=False,
+        showline=False,
         ticks="",
         automargin=True,
     )
-    
     fig.update_yaxes(
-        showgrid=False, 
-        zeroline=False, 
-        showline=False, 
-        ticks="", 
-        automargin=True
+        showgrid=False,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        automargin=True,
     )
-    
-    # Add total annotation
     if total > 0:
         fig.add_annotation(
-            xref="paper", x=1.0, 
-            yref="paper", y=1.05,
+            xref="paper",
+            x=1.0,
+            yref="paper",
+            y=1.05,
             text=f"<b>Total Steuern:</b> CHF {total:,.0f}",
-            showarrow=False, 
-            font=dict(size=12), 
-            xanchor="right"
+            showarrow=False,
+            font=dict(size=12),
+            xanchor="right",
         )
-    
     st.plotly_chart(fig, use_container_width=True, theme=None)
+
+
 # ------------------------- Run & render ------------------------
 if profit > 0:
     A = scenario_salary_only()
     B = scenario_dividend()
     with st.container(border=True):
-      st.subheader("Szenario A – 100% Lohn")
-      st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
-      st.write(f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv']+A['blocks']['ag']['alv']+A['blocks']['ag']['bvg']):,.0f}")
-      st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
-      st.write(f"AN AHV/ALV/NBU/PK: CHF {(A['blocks']['an']['ahv']+A['blocks']['an']['alv']+A['blocks']['an']['nbu']+A['blocks']['an']['pk']):,.0f}")
-      st.write(f"Einkommenssteuer **Bund**: CHF {A['blocks']['fed']:,.0f}")
-      st.write(f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | **Kirche**: CHF {A['blocks']['church']:,.0f}  | **Personal**: CHF {A['blocks']['personal']:,.0f}")
-      st.success(f"**Netto an Inhaber (heute):** CHF {A['net']:,.0f}")
-
-      tax_breakdown_chart(
-          "Steueraufteilung (Szenario A)",
-          A["blocks"]["fed"], A["blocks"]["cant"], A["blocks"]["city"], A["blocks"]["church"], A["blocks"]["personal"]
-      )
+        st.subheader("Szenario A – 100% Lohn")
+        st.write(f"Bruttolohn: **CHF {A['salary']:,.0f}**")
+        st.write(
+            f"AG AHV/ALV/BVG: CHF {(A['blocks']['ag']['ahv'] + A['blocks']['ag']['alv'] + A['blocks']['ag']['bvg']):,.0f}"
+        )
+        st.write(f"AG FAK/UVG/KTG: CHF {A['blocks']['ag']['extra']:,.0f}")
+        st.write(
+            f"AN AHV/ALV/NBU/PK: CHF {(A['blocks']['an']['ahv'] + A['blocks']['an']['alv'] + A['blocks']['an']['nbu'] + A['blocks']['an']['pk']):,.0f}"
+        )
+        st.write(f"Einkommenssteuer **Bund**: CHF {A['blocks']['fed']:,.0f}")
+        st.write(
+            f"Einkommenssteuer **Kanton**: CHF {A['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {A['blocks']['city']:,.0f}  | "
+            f"**Kirche**: CHF {A['blocks']['church']:,.0f}  | **Personal**: CHF {A['blocks']['personal']:,.0f}"
+        )
+        st.success(f"**Netto an Inhaber (heute):** CHF {A['net']:,.0f}")
+        tax_breakdown_chart(
+            "Steueraufteilung (Szenario A)",
+            A["blocks"]["fed"],
+            A["blocks"]["cant"],
+            A["blocks"]["city"],
+            A["blocks"]["church"],
+            A["blocks"]["personal"],
+        )
     st.divider()
     with st.container(border=True):
-      st.subheader("Szenario B – Lohn + Dividende")
-      st.write(f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**")
-      st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
-      st.write(f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | **Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}")
-      st.write(
-        f"Steuer auf **Dividende** (inkr.): Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
-        f"Δ Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
-        f"Δ Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
-        f"Δ Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
-        f"Δ Personal CHF {B['blocks']['div_tax']['personal']:,.0f} | "
-        f"**Δ Total CHF {B['blocks']['div_tax']['total']:,.0f}**"
-      )
-      st.caption(f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed']*100)}%, Kanton {int(B['blocks']['inc_cant']*100)}% (ab 10% Beteiligung).")
-      st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
-  
-      tax_breakdown_chart(
-          "Steueraufteilung (Szenario B)",
-          B["blocks"]["fed"], B["blocks"]["cant"], B["blocks"]["city"], B["blocks"]["church"], B["blocks"]["personal"]
-      )
-      st.markdown(" ")  
-      tax_breakdown_chart(
-        "Steuer auf Dividende (inkrementell)",
-        B["blocks"]["div_tax"]["fed"], B["blocks"]["div_tax"]["cant"], B["blocks"]["div_tax"]["city"],
-        B["blocks"]["div_tax"]["church"], B["blocks"]["div_tax"]["personal"]
-      )
-  
+        st.subheader("Szenario B – Lohn + Dividende")
+        st.write(
+            f"Bruttolohn: **CHF {B['salary']:,.0f}** | Dividende gesamt: **CHF {B['dividend']:,.0f}**"
+        )
+        st.write(f"Einkommenssteuer **Bund**: CHF {B['blocks']['fed']:,.0f}")
+        st.write(
+            f"Einkommenssteuer **Kanton**: CHF {B['blocks']['cant']:,.0f}  | **Gemeinde**: CHF {B['blocks']['city']:,.0f}  | "
+            f"**Kirche**: CHF {B['blocks']['church']:,.0f}  | **Personal**: CHF {B['blocks']['personal']:,.0f}"
+        )
+        st.write(
+            f"Steuer auf **Dividende** (inkr.): Bund CHF {B['blocks']['div_tax']['fed']:,.0f} | "
+            f"Δ Kanton CHF {B['blocks']['div_tax']['cant']:,.0f} | "
+            f"Δ Gemeinde CHF {B['blocks']['div_tax']['city']:,.0f} | "
+            f"Δ Kirche CHF {B['blocks']['div_tax']['church']:,.0f} | "
+            f"Δ Personal CHF {B['blocks']['div_tax']['personal']:,.0f} | "
+            f"**Δ Total CHF {B['blocks']['div_tax']['total']:,.0f}**"
+        )
+        st.caption(
+            f"Teilbesteuerung Dividenden: Bund {int(B['blocks']['inc_fed'] * 100)}%, "
+            f"Kanton {int(B['blocks']['inc_cant'] * 100)}% (ab 10% Beteiligung)."
+        )
+        st.success(f"**Netto an Inhaber (heute):** CHF {B['net']:,.0f}")
+        tax_breakdown_chart(
+            "Steueraufteilung (Szenario B)",
+            B["blocks"]["fed"],
+            B["blocks"]["cant"],
+            B["blocks"]["city"],
+            B["blocks"]["church"],
+            B["blocks"]["personal"],
+        )
+        st.markdown(" ")
+        tax_breakdown_chart(
+            "Steuer auf Dividende (inkrementell)",
+            B["blocks"]["div_tax"]["fed"],
+            B["blocks"]["div_tax"]["cant"],
+            B["blocks"]["div_tax"]["city"],
+            B["blocks"]["div_tax"]["church"],
+            B["blocks"]["div_tax"]["personal"],
+        )
     st.markdown("---")
     st.subheader("Vergleich (heutiger Nettozufluss)")
-    c1,c2=st.columns(2)
-    with c1: st.metric("A: Lohn", f"CHF {A['net']:,.0f}")
-    with c2: st.metric("B: Lohn + Dividende", f"CHF {B['net']:,.0f}")
-
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("A: Lohn", f"CHF {A['net']:,.0f}")
+    with c2:
+        st.metric("B: Lohn + Dividende", f"CHF {B['net']:,.0f}")
     if optimizer_on:
         st.markdown("---")
         st.subheader("Optimierer – beste Mischung")
         best = optimize_mix()
-        st.write(f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}")
+        st.write(
+            f"**Optimaler Lohn:** CHF {best['salary']:,.0f}  |  **Dividende:** CHF {best['dividend']:,.0f}"
+        )
         st.write(f"Einkommenssteuer gesamt: CHF {best['income_tax']:,.0f}")
-        st.write(f"Nachsteuerlich einbehalten (vereinfachend): CHF {best['retained_after_tax']:,.0f}")
+        st.write(
+            f"Nachsteuerlich einbehalten (vereinfachend): CHF {best['retained_after_tax']:,.0f}"
+        )
         st.success(f"**Max. Netto an Inhaber (heute):** CHF {best['net']:,.0f}")
-
     if debug_mode:
         st.markdown("---")
         st.subheader("Debug-Informationen")
-        st.write(f"Ort: {gemeinde_rec['BfsName']} ({canton_code}) | BFS: {BFS_ID} | CantonID: {CANT_ID}")
-        st.write(f"Taxable Bund: CHF {A['blocks']['taxable_fed']:,.0f} | Taxable Kanton: CHF {A['blocks']['taxable_cant']:,.0f}")
-        st.write(f"Tariftypen: Bund {(A['blocks']['fed_tarif'] or {}).get('tableType')}, Kanton {(A['blocks']['cant_tarif'] or {}).get('tableType')}")
+        st.write(
+            f"Ort: {gemeinde_rec['BfsName']} ({canton_code}) | BFS: {BFS_ID} | CantonID: {CANT_ID}"
+        )
+        st.write(
+            f"Taxable Bund: CHF {A['blocks']['taxable_fed']:,.0f} | Taxable Kanton: CHF {A['blocks']['taxable_cant']:,.0f}"
+        )
+        st.write(
+            f"Tariftypen: Bund {(A['blocks']['fed_tarif'] or {}).get('tableType')}, "
+            f"Kanton {(A['blocks']['cant_tarif'] or {}).get('tableType')}"
+        )
         if canton_code == "BL":
-            st.caption("BL FORMEL-Engine aktiv – Formel normalisiert (log/ln) und mit Splitting + Rundung ausgewertet.")
-
+            st.caption(
+                "BL FORMEL-Engine aktiv – Formel normalisiert (log/ln) und mit Splitting + Rundung ausgewertet."
+            )
     with st.expander("Hinweise & Annahmen", expanded=False):
         st.markdown("### So funktioniert das Modell")
         st.markdown(
@@ -849,40 +1169,47 @@ if profit > 0:
             "- Kanton-**Basisteuer × Faktoren** ⇒ Kanton + Gemeinde + (Kirche je Konfession).  \n"
             "- **Personalsteuer**: fixer Kopfsteuer-Betrag, falls der Kanton eine erhebt.  \n\n"
             "**4) *Steuer auf Dividende (inkrementell)***  \n"
-            "Steuern werden zweimal berechnet: **mit** und **ohne** Dividende. Die Differenz je Ebene ist die Steuer, die **ausschliesslich** durch die Dividende entsteht. So sind Progression, Splitting und Rundung korrekt enthalten.  \n\n"
+            "Steuern werden zweimal berechnet: **mit** und **ohne** Dividende. Die Differenz je Ebene ist die Steuer, die "
+            "**ausschliesslich** durch die Dividende entsteht. So sind Progression, Splitting und Rundung korrekt enthalten.  \n\n"
             "**5) Netto an Inhaber**  \n"
             "`Netto = (Lohn − AN-Abzüge) + Dividende − (Bund + Kanton + Gemeinde + Kirche + Personal)`"
         )
-    
-        # Optional: die aktuellen Zwischenschritte für diesen Fall anzeigen
+        # Additional notes about new deductions
+        st.markdown(
+            "\n### Neue automatische Abzüge\n"
+            "- **Versicherungsprämien & Sparkapitalzinsen (Bund)**: Automatische Berechnung nach ESTV 2025: "
+            "CHF 1’800 (ledig) / 3’700 (verheiratet) mit 2. Säule; CHF 2’700 / 5’550 ohne 2. Säule; plus "
+            "CHF 700 pro Kind【445471956656578†L160-L207】.\n"
+            "- **Säule 3a**: Maximale Einlagen für 2025 laut ESTV: CHF 7’258 (mit 2. Säule) oder CHF 36’288 (ohne). "
+            "Diese Werte werden als Standardabzug bei entsprechenden Deduktionspositionen gesetzt【16920089821364†L449-L462】."
+        )
         if profit > 0 and "blocks" in B:
             st.markdown("### Aktuelle Zwischenschritte (mit Ihren Eingaben)")
             div_brutto = float(B.get("dividend", 0.0))
             inc_fed = float((B["blocks"].get("inc_fed") or 0.70))
             inc_cant = float((B["blocks"].get("inc_cant") or 0.70))
-            # Tarif-Basis MIT/ OHNE Dividende (nach 100-CHF-Rundung)
-            fed_with  = dinero_round_100_down(B["blocks"].get("taxable_fed", 0.0))
-            fed_wo    = dinero_round_100_down(B["blocks"].get("taxable_fed", 0.0)  - div_brutto*inc_fed)
+            fed_with = dinero_round_100_down(B["blocks"].get("taxable_fed", 0.0))
+            fed_wo = dinero_round_100_down(
+                B["blocks"].get("taxable_fed", 0.0) - div_brutto * inc_fed
+            )
             cant_with = dinero_round_100_down(B["blocks"].get("taxable_cant", 0.0))
-            cant_wo   = dinero_round_100_down(B["blocks"].get("taxable_cant", 0.0) - div_brutto*inc_cant)
-    
+            cant_wo = dinero_round_100_down(
+                B["blocks"].get("taxable_cant", 0.0) - div_brutto * inc_cant
+            )
             st.markdown(
                 f"- **Dividende brutto:** CHF {div_brutto:,.0f}  \n"
-                f"- **Steuerbar**: Bund **CHF {div_brutto*inc_fed:,.0f}**, "
-                f"Kanton/Gemeinde **CHF {div_brutto*inc_cant:,.0f}**  \n"
+                f"- **Steuerbar**: Bund **CHF {div_brutto*inc_fed:,.0f}**, Kanton/Gemeinde "
+                f"**CHF {div_brutto*inc_cant:,.0f}**  \n"
                 f"- **Tarif-Basis nach Rundung (Bund):** {fed_wo:,.0f} → {fed_with:,.0f} "
                 f"(Δ {fed_with-fed_wo:,.0f})  \n"
                 f"- **Tarif-Basis nach Rundung (Kanton):** {cant_wo:,.0f} → {cant_with:,.0f} "
                 f"(Δ {cant_with-cant_wo:,.0f})"
             )
-    
-            # falls die inkrementellen Steuerbeträge vorhanden sind, zeigen
             div_tax = B["blocks"].get("div_tax")
             if isinstance(div_tax, dict):
                 dt = div_tax
                 st.markdown(
-                    f"- **Steuer auf Dividende (inkr.)**: "
-                    f"Bund CHF {dt.get('fed',0):,.0f} · "
+                    f"- **Steuer auf Dividende (inkr.)**: Bund CHF {dt.get('fed',0):,.0f} · "
                     f"Kanton CHF {dt.get('cant',0):,.0f} · "
                     f"Gemeinde CHF {dt.get('city',0):,.0f} · "
                     f"Kirche CHF {dt.get('church',0):,.0f} → "
@@ -891,29 +1218,25 @@ if profit > 0:
                     f"{(dt.get('total',0)/max(div_brutto,1)):.1%} der Brutto-Dividende · "
                     f"{(dt.get('total',0)/max(div_brutto*inc_fed,1)):.1%} des steuerbaren Teils (Bund)"
                 )
-    
-        # (Behalte deine bisherigen Bullet-Points gern darunter)
         st.markdown("---")
         st.markdown(
             "- **Kirchensteuer:** echte Ortsfaktoren (röm./ref./christkath.) aus `factors/`.  \n"
-            "- **AHV/ALV/NBU/PK (AN):** 5.3 % / 1.1 % / 0.4 % (bis 148’200) + PK-Einkauf (frei).  \n"
+            "- **AHV/ALV/NBU/PK (AN):** 5.3 % / 1.1 % / 0.4 % (bis 148’200) + PK-Einkauf (frei).  \n"
             "- **Splitting & Gruppe:** gemäss Zivilstand/Kinder; nur wenn tariflich zulässig.  \n"
-            "- **Bund:** Kinderabzug −251 CHF/Kind auf der Bundessteuer.  \n"
+            "- **Bund:** Kinderabzug −251 CHF/Kind auf der Bundessteuer.  \n"
             "- **BVG-Anzeige (AG/AN):** als Kostblöcke; Steuerbasis nutzt devbrains-Netto.  \n"
             "- **Abzüge:** bis zur vollständigen Portierung stehen zwei manuelle Felder (Bund/Kanton) zur Verfügung."
         )
         st.markdown("---")
         st.markdown(
-            """
-    - Die Ergebnisse sind **unverbindliche Näherungen**. Tarife/Faktoren und Annahmen werden gepflegt, können aber unvollständig
-      oder veraltet sein. Modellvereinfachungen (z. B. Rundungen auf 100 CHF, BVG-Abbildung, Teilbesteuerung, Splitting,
-      manuelle Abzüge, Personalsteuer) führen zu Differenzen gegenüber amtlichen Veranlagungen.
-    - **Spezialfälle** (z. B. Quellensteuer, mehrere Wohn-/Steuerorte, Immobilien, Verlustvorträge, besondere Abzüge) sind nur
-      teilweise berücksichtigt.
-    - **Keine Steuer- oder Rechtsberatung.** Für verbindliche Auskünfte wenden Sie sich an Ihre Steuerberatung oder die Behörde.
-      Mit der Nutzung erkennen Sie diese Hinweise an.
-            """
+            "- Die Ergebnisse sind **unverbindliche Näherungen**. Tarife/Faktoren und Annahmen werden gepflegt, "
+            "können aber unvollständig oder veraltet sein. Modellvereinfachungen (z. B. Rundungen auf 100 CHF, "
+            "BVG-Abbildung, Teilbesteuerung, Splitting, manuelle Abzüge, Personalsteuer) führen zu Differenzen "
+            "gegenüber amtlichen Veranlagungen.\n"
+            "- **Spezialfälle** (z. B. Quellensteuer, mehrere Wohn-/Steuerorte, Immobilien, Verlustvorträge, "
+            "besondere Abzüge) sind nur teilweise berücksichtigt.\n"
+            "- **Keine Steuer- oder Rechtsberatung.** Für verbindliche Auskünfte wenden Sie sich an Ihre "
+            "Steuerberatung oder die Behörde. Mit der Nutzung erkennen Sie diese Hinweise an."
         )
-
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
