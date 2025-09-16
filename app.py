@@ -91,6 +91,111 @@ def load_factors(canton_id:int):
     with (YEAR_ROOT / "factors" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
         return json.load(f)
 
+# --- NEW: deduction loader & calculator -----------------------
+@st.cache_data(show_spinner=False)
+def load_deductions(canton_id: int):
+    """
+    Load the deduction definitions for the federal government (Bund) and the
+    selected canton. Each file contains a list of objects; the first object
+    of type "EINKOMMENSSTEUER" holds the deduction definitions under
+    the key ``items``.
+    """
+    # Federal deductions are stored in 0.json
+    try:
+        with (YEAR_ROOT / "deductions" / "0.json").open("r", encoding="utf-8") as f:
+            fed_data = json.load(f)
+            fed_items = next(
+                (obj.get("items", []) for obj in fed_data if obj.get("type") == "EINKOMMENSSTEUER"),
+                []
+            )
+    except Exception:
+        fed_items = []
+    # Cantonal deductions
+    try:
+        with (YEAR_ROOT / "deductions" / f"{int(canton_id)}.json").open("r", encoding="utf-8") as f:
+            cant_data = json.load(f)
+            cant_items = next(
+                (obj.get("items", []) for obj in cant_data if obj.get("type") == "EINKOMMENSSTEUER"),
+                []
+            )
+    except Exception:
+        cant_items = []
+    return fed_items, cant_items
+
+def calc_auto_deductions(items: list, salary: float, other_inc: float,
+                         relationship: str, children: int):
+    """
+    Compute automatic deductions based on a list of deduction items. Only
+    deductions that can be derived from existing inputs are calculated.
+
+    Currently supported:
+    - Child deductions (``SozKind_*``): standardized amount multiplied by
+      number of children.
+    - Married deduction (``SozVerheiratet_EK``): standardized amount for
+      married couples.
+    - Professional expense deduction for main occupation (``HauptErw_EK``):
+      percentage of salary with min/max limits.
+    - Professional expense deduction for secondary occupation (``NebenErw_EK``):
+      percentage of other income with min/max limits.
+
+    Returns:
+        A tuple (total_deduction, breakdown) where ``breakdown`` maps
+        deduction IDs to the calculated amount.
+    """
+    total = 0.0
+    breakdown = {}
+    for item in items:
+        ident = (item.get("id") or "").upper()
+        fmt = (item.get("format") or "").upper()
+        minimum = float(item.get("minimum") or 0.0)
+        maximum = float(item.get("maximum") or 0.0)
+        percent = float(item.get("percent") or 0.0) / 100.0
+        amount = float(item.get("amount") or 0.0)
+
+        # Child deductions
+        if ident.startswith("SOZKIND") or ident.startswith("SOZKINDER"):
+            ded = amount * children
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Married deduction
+        if ident == "SOZVERHEIRATET_EK" and relationship in ("m", "rp"):
+            if amount > 0:
+                breakdown[ident] = amount
+                total += amount
+            continue
+
+        # Main occupation expense deduction
+        if ident == "HAUPTERW_EK":
+            base = salary
+            ded = base * percent
+            if "MINIMUM" in fmt:
+                ded = max(ded, minimum)
+            if "MAXIMUM" in fmt and maximum > 0:
+                ded = min(ded, maximum)
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Secondary occupation expense deduction
+        if ident == "NEBENERW_EK":
+            base = other_inc
+            ded = base * percent
+            if "MINIMUM" in fmt:
+                ded = max(ded, minimum)
+            if "MAXIMUM" in fmt and maximum > 0:
+                ded = min(ded, maximum)
+            if ded > 0:
+                breakdown[ident] = ded
+                total += ded
+            continue
+
+        # Unsupported deduction types are ignored; they must be entered manually
+    return total, breakdown
+
 # --- NEW: dynamic Teilbesteuerung (cantonal) -------------------
 @st.cache_data(show_spinner=False)
 def load_dividend_inclusion_map():
@@ -427,10 +532,24 @@ with st.expander("ANNAHMEN", expanded=True):
         uvg_rate     = st.number_input("UVG/KTG (Arbeitgeber) [%]", 0.0, 5.0, 1.0, step=0.1)/100.0
         st.caption("AHV/ALV/BVG standardmässig **an**.")
     st.markdown("---")
-    st.markdown("**Abzüge – manuell** (direkt vom steuerbaren Einkommen abgezogen):")
+
+    # Compute automatic deduction suggestions before showing number inputs
+    salary_base = profit if (desired_income is None or desired_income == 0) else min(profit, desired_income)
+    net_for_tax_base, _tmp = gross_to_net_for_tax(salary_base, pk_buyin)
+    fed_items, cant_items = load_deductions(CANT_ID)
+    fed_auto, _fed_breakdown = calc_auto_deductions(
+        fed_items, net_for_tax_base, other_inc, relationship, children
+    )
+    cant_auto, _cant_breakdown = calc_auto_deductions(
+        cant_items, net_for_tax_base, other_inc, relationship, children
+    )
+
+    st.markdown("**Abzüge – automatisch berechnete Werte können angepasst werden:**")
     d1, d2 = st.columns(2)
-    with d1: fed_ded_manual  = st.number_input("Abzüge **Bund** [CHF]", 0.0, step=100.0, value=0.0)
-    with d2: cant_ded_manual = st.number_input("Abzüge **Kanton/Gemeinde** [CHF]", 0.0, step=100.0, value=0.0)
+    with d1:
+        fed_ded_manual  = st.number_input("Abzüge **Bund** [CHF]", value=fed_auto, step=100.0)
+    with d2:
+        cant_ded_manual = st.number_input("Abzüge **Kanton/Gemeinde** [CHF]", value=cant_auto, step=100.0)
 
 optimizer_on = st.checkbox("Optimierer – beste Mischung (Lohn + Dividende) finden", value=True)
 debug_mode   = st.checkbox("Debug-Informationen anzeigen", value=False)
@@ -798,4 +917,3 @@ if profit > 0:
 
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
-
