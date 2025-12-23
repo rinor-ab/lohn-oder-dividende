@@ -21,6 +21,33 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown(
+    """
+    <style>
+    /* SUCCESS box (was green) */
+    div[data-testid="stAlert"][class*="success"] {
+        background-color: rgba(55, 59, 87, 0.10);
+        border-left: 6px solid #373b57;
+        color: #373b57;
+    }
+
+    /* WARNING box (was yellow) */
+    div[data-testid="stAlert"][class*="warning"] {
+        background-color: rgba(55, 59, 87, 0.06);
+        border-left: 6px solid #6a7096; /* lighter derived brand shade */
+        color: #373b57;
+    }
+
+    /* Optional: unify alert title + text */
+    div[data-testid="stAlert"] p {
+        color: #373b57;
+        font-weight: 500;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
