@@ -28,14 +28,14 @@ if YEAR_ROOT is None:
 # ------------------------- Constants --------------------------
 RULE_MODE_STRIKT = "Strikt (Dividende nur bei Lohn ≥ Mindestlohn)"
 AHV_ON_DEFAULT = True
-BAR_COLOR = "#af966d"  # keep your brand color
+BAR_COLOR = "#373b57"  # keep your brand color
 COLORS = {
-    'primary': "#af966d",      # Your brand color
-    'federal': "#8B4513",      # Darker brown for federal
-    'canton': "#CD853F",       # Medium brown for canton  
-    'city': "#DEB887",         # Light brown for city
-    'church': "#F4A460",       # Sandy brown for church
-    'personal': "#D2691E"      # Orange brown for personal
+    'primary': "#373b57",      # Your brand color
+    'federal': "#2b2f45",      # Darker brown for federal
+    'canton': "#4a5072",       # Medium brown for canton  
+    'city': "#6a7096",         # Light brown for city
+    'church': "#8a8fb3",       # Sandy brown for church
+    'personal': "#5b4f7d"      # Orange brown for personal
 }
 # devbrains gross->net for *income tax* base (AN-Seite)
 AHV_IV_EO = 0.053
