@@ -8,6 +8,20 @@ import streamlit as st
 from typing import Optional
 
 
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Manrope', sans-serif;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
 # ------------------------- Data roots -------------------------
 APP_DIR = pathlib.Path(__file__).parent
 CANDIDATE_DATA_ROOTS = [
