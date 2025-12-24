@@ -4,3 +4,5 @@ xlrd>=2.0
 streamlit
 plotly==5.22.0
 matplotlib==3.8.4
+selenium==4.27.1
+webdriver-manager==4.0.2
