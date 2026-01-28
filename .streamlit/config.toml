@@ -13,4 +13,4 @@ primaryColor="#0A3C7D"                # buttons, sliders, toggles
 backgroundColor="#FFFFFF"             # page bg
 secondaryBackgroundColor="#F6F7F9"    # cards/expanders bg
 textColor="#1A1A1A"                   # default text
-font="Helvetica"                     # we'll override with CSS for your exact font
+font="Inter"                     # we'll override with CSS for your exact font
