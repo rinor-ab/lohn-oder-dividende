@@ -575,17 +575,18 @@ Lohn vs. Dividende
 
 st.markdown("""
 <p style="
-    font-size: 1.05rem;
+    font-size: 1rem;
     line-height: 1.65;
-    color: #475569;
+    color: #6B7280;
     max-width: 760px;
     margin-bottom: 2rem;
 ">
-Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für Ihre AG oder GmbH simulieren.
-Auf Basis von Kanton, Gemeinde und individuellen Annahmen zeigt das Tool, welche Variante für Sie finanziell
-vorteilhafter ist.
+Mit diesem Rechner können Sie die steuerlichen Unterschiede zwischen Lohn und Dividende für Ihre AG
+oder GmbH simulieren. Auf Basis von Kanton, Gemeinde und individuellen Annahmen zeigt das Tool,
+welche Variante für Sie finanziell vorteilhafter ist.
 </p>
 """, unsafe_allow_html=True)
+
 
 # Location
 _, by_canton = load_locations()
