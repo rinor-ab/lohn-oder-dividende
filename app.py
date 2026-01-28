@@ -604,7 +604,7 @@ with col2:
     other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
     age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
 
-with st.expander("ANNAHMEN", expanded=True):
+with st.expander("Weitere Angaben (optional)", expanded=True):
     st.subheader("Annahmen")
     cA, cB = st.columns(2)
     with cA:
@@ -613,9 +613,9 @@ with st.expander("ANNAHMEN", expanded=True):
             options=[("s","Ledig"),("c","Konkubinat"),("m","Verheiratet"),("rp","Eingetragene Partnerschaft")],
             index=0, format_func=lambda x: x[1]
         )[0]
-        children     = st.number_input("Kinder", 0, step=1)
+        children     = st.number_input("Anzahl Kinder", 0, step=1)
         confession   = st.selectbox(
-            "Konfession (Kirchensteuer)",
+            "Kirchensteuer (falls zutreffend)",
             options=[("none","Keine"),("roman","Röm.-kath."),("protestant","Ref./evang."),("christ","Christkath.")],
             index=0, format_func=lambda x: x[1]
         )[0]
