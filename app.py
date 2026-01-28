@@ -21,20 +21,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.markdown("""
-<style>
-/* Make Streamlit h1 look like article H2 */
-h1 {
-    font-size: 1.9rem;
-    font-weight: 500;
-    letter-spacing: -0.01em;
-    margin-top: 0;
-    margin-bottom: 0.8rem;
-    color: #0F172A;
-}
-</style>
-""", unsafe_allow_html=True)
-
 
 
 st.markdown(
@@ -576,6 +562,18 @@ def federal_tax(taxable_bund: float, relationship:str, children:int):
 
 # ------------------------- UI ----------------------------------
 st.title("Lohn oder Dividende")
+st.markdown("""
+<h2 style="
+    font-size: 1.9rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.8rem 0;
+    color: #0F172A;
+">
+Lohn vs. Dividende
+</h2>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <p style="
     font-size: 1.05rem;
