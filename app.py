@@ -23,8 +23,8 @@ st.markdown(
 
 st.markdown("""
 <style>
-h1 {
-    font-weight: 500;
+h2 {
+    font-weight: 400;
     letter-spacing: -0.01em;
 }
 </style>
