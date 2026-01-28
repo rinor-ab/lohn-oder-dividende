@@ -578,7 +578,7 @@ st.markdown("""
 <p style="
     font-size: 1rem;
     line-height: 1.65;
-    color: #6B7280;
+    color: #64748B;
     max-width: 760px;
     margin-bottom: 2rem;
 ">
