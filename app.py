@@ -82,7 +82,7 @@ def intro_dialog():
 Details, Zwischenschritte und rechtliche Hinweise finden Sie unten unter **Hinweise & Annahmen**.
     """)
 
-    if st.button("OK", type="primary", use_container_width=True):
+    if st.button("Verstanden, weiter zur Berechnung", type="primary", use_container_width=True):
         st.session_state.intro_ok = True
         st.rerun()
 
