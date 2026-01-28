@@ -23,12 +23,18 @@ st.markdown(
 
 st.markdown("""
 <style>
+/* Make Streamlit h1 look like article H2 */
 h1 {
-    font-weight: 200;
+    font-size: 1.9rem;
+    font-weight: 500;
     letter-spacing: -0.01em;
+    margin-top: 0;
+    margin-bottom: 0.8rem;
+    color: #0F172A;
 }
 </style>
 """, unsafe_allow_html=True)
+
 
 
 st.markdown(
