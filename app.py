@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from typing import Optional
 
+st.set_page_config(layout="wide")
 
 st.markdown(
     """
