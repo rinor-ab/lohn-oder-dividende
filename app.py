@@ -559,7 +559,18 @@ def federal_tax(taxable_bund: float, relationship:str, children:int):
     return taxes, grp, tarif
 
 # ------------------------- UI ----------------------------------
-st.title("Lohn vs. Dividende")
+st.title("Lohn oder Dividende")
+st.markdown("""
+<style>
+h1 {
+    font-size: 2.1rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.6rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <p style="
     font-size: 1.05rem;
