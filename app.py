@@ -66,79 +66,80 @@ if YEAR_ROOT is None:
     st.error("Konnte devbrains-Daten nicht finden. Erwartet: data/parsed/2025/…")
     st.stop()
 
-# --- Intro popup gate (show once per session) ---
+# ------------------------- Intro popup -------------------------
 if "intro_ok" not in st.session_state:
     st.session_state.intro_ok = False
 
 if not st.session_state.intro_ok:
+
     st.markdown("""
     <style>
-    .modal-backdrop {
+    .intro-overlay {
         position: fixed;
         inset: 0;
         background: rgba(15, 23, 42, 0.55);
         z-index: 9998;
     }
-    .modal-card {
+    .intro-modal {
         position: fixed;
-        top: 10%;
+        top: 12%;
         left: 50%;
         transform: translateX(-50%);
         width: min(760px, calc(100vw - 2rem));
         background: white;
-        border: 1px solid rgba(55, 59, 87, 0.20);
         border-radius: 16px;
-        padding: 1.2rem 1.3rem;
+        padding: 1.3rem 1.4rem;
         z-index: 9999;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+        box-shadow: 0 25px 60px rgba(0,0,0,0.25);
     }
-    .modal-title {
+    .intro-title {
         font-weight: 700;
         color: #373b57;
-        font-size: 1.1rem;
+        font-size: 1.15rem;
         margin-bottom: 0.6rem;
     }
-    .modal-body {
+    .intro-body {
         color: #334155;
-        line-height: 1.55;
         font-size: 0.98rem;
+        line-height: 1.55;
     }
-    .modal-body ol { margin: 0.4rem 0 0 1.2rem; }
-    .modal-footer {
-        margin-top: 0.9rem;
+    .intro-body ol {
+        margin: 0.5rem 0 0 1.2rem;
+    }
+    .intro-footer {
+        margin-top: 1rem;
         display: flex;
         justify-content: flex-end;
-        gap: 0.5rem;
     }
     </style>
 
-    <div class="modal-backdrop"></div>
-    <div class="modal-card">
-      <div class="modal-title">🧭 So funktioniert das Modell</div>
-      <div class="modal-body">
-        <ol>
-          <li><b>Dividende ermitteln:</b> Lohn festlegen, AG-Nebenkosten abziehen, Rest = Dividende.</li>
-          <li><b>Steuerbarer Teil:</b> Bund 70 %, Kanton/Gemeinde gemäss Mapping.</li>
-          <li><b>Tarifierung:</b> Splitting je Gruppe, Rundung auf volle 100 CHF, Faktoren für Gemeinde und Kirche.</li>
-          <li><b>Dividendensteuer inkrementell:</b> Steuer mit und ohne Dividende, Differenz = Dividendeneffekt.</li>
-          <li><b>Netto:</b> (Lohn − AN-Abzüge) + Dividende − alle Steuern.</li>
-        </ol>
-        <div style="margin-top:0.7rem; color:#475569; font-size:0.92rem;">
-          Details, Zwischenschritte und rechtliche Hinweise finden Sie unten unter <b>Hinweise &amp; Annahmen</b>.
+    <div class="intro-overlay"></div>
+    <div class="intro-modal">
+        <div class="intro-title">🧭 So funktioniert das Modell</div>
+        <div class="intro-body">
+            <ol>
+                <li><b>Dividende ermitteln:</b> Lohn festlegen, AG-Nebenkosten abziehen, Rest = Dividende.</li>
+                <li><b>Steuerbarer Teil:</b> Bund 70 %, Kanton und Gemeinde gemäss Mapping.</li>
+                <li><b>Tarifierung:</b> Splitting je Gruppe, Rundung auf volle 100 CHF, Faktoren für Gemeinde und Kirche.</li>
+                <li><b>Dividendensteuer inkrementell:</b> Steuer mit und ohne Dividende, Differenz = Dividendeneffekt.</li>
+                <li><b>Netto:</b> (Lohn − AN-Abzüge) + Dividende − alle Steuern.</li>
+            </ol>
+            <div style="margin-top:0.7rem; color:#475569; font-size:0.92rem;">
+                Details, Zwischenschritte und rechtliche Hinweise finden Sie unten unter <b>Hinweise &amp; Annahmen</b>.
+            </div>
         </div>
-      </div>
     </div>
     """, unsafe_allow_html=True)
 
-    c_ok = st.container()
-    with c_ok:
-        colA, colB, colC = st.columns([4, 1.4, 0.2])
-        with colB:
-            if st.button("OK", type="primary", use_container_width=True):
-                st.session_state.intro_ok = True
-                st.rerun()
+    # Real Streamlit button rendered ABOVE stop()
+    col1, col2, col3 = st.columns([4, 1.4, 0.2])
+    with col2:
+        if st.button("OK", type="primary", use_container_width=True):
+            st.session_state.intro_ok = True
+            st.rerun()
 
     st.stop()
+
 
 
 # ------------------------- Constants --------------------------
