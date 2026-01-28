@@ -604,7 +604,7 @@ with col2:
     other_inc      = st.number_input("Weitere steuerbare Einkünfte [CHF]", 0.0, step=10_000.0)
     age_input      = st.number_input("Alter (für BVG-Altersband)", min_value=18, max_value=70, value=40, step=1)
 
-with st.expander("Weitere Angaben (optional)", expanded=True):
+with st.expander("Weitere Angaben (optional)", expanded=False):
     st.subheader("Annahmen")
     cA, cB = st.columns(2)
     with cA:
