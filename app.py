@@ -1012,3 +1012,5 @@ if profit > 0:
 
 else:
     st.warning("Bitte Gewinn > 0 eingeben, um die Berechnung zu starten.")
+    st.markdown("---")
+st.caption("Hinweis: Sämtliche Angaben / Berechnungen ohne Gewähr. Die App dient lediglich dazu, eine erste Einschätzung zu erhalten und ersetzt nicht die individuelle Beratung.")
